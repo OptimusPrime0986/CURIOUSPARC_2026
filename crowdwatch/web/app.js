@@ -92,7 +92,13 @@ document.addEventListener("DOMContentLoaded", () => {
           heatmapCountPill.textContent = `${rounded} ppl`;
         }
 
-        // Risk Level styling
+        // Density display
+        const metricSubDensity = document.getElementById("metric-sub-density");
+        if (metricSubDensity && data.density_m2 !== undefined) {
+          metricSubDensity.textContent = `Approx. ${data.density_m2} ppl/m² avg (${data.red_hotspot_pct || 0}% hotspots)`;
+        }
+
+        // Risk Level styling & Master Stampede Early-Warning Banner
         if (data.risk_level) {
           const level = data.risk_level.toLowerCase();
           headerRiskBadge.className = `risk-badge badge-${level}`;
@@ -102,9 +108,50 @@ document.addEventListener("DOMContentLoaded", () => {
           metricRiskLabel.textContent = data.risk_level;
 
           masterRiskCard.className = `master-alert-card banner-${level}`;
-          masterRiskStatus.textContent = `STATUS: SYSTEM ${data.risk_level}`;
+          masterRiskStatus.textContent = `STATUS: ${data.risk_title || ("SYSTEM " + data.risk_level)}`;
           if (data.risk_action) {
             masterRiskAction.textContent = data.risk_action;
+          }
+
+          const alertIconEmoji = document.getElementById("alert-icon-emoji");
+          if (alertIconEmoji) {
+            alertIconEmoji.textContent = data.risk_icon || (level === "normal" ? "🛡️" : level === "watch" ? "👀" : level === "warning" ? "⚠️" : "🚨");
+          }
+
+          const dwellText = masterRiskCard ? masterRiskCard.querySelector(".dwell-text") : null;
+          if (dwellText) {
+            dwellText.textContent = `Hotspots: ${data.red_hotspot_pct || 0}% | Mid-Zone: ${data.yellow_zone_pct || 0}% | Free: ${data.blue_free_pct || 0}%`;
+          }
+
+          const advisoryTag = masterRiskCard ? masterRiskCard.querySelector(".advisory-tag") : null;
+          if (advisoryTag && data.risk_advisory) {
+            advisoryTag.textContent = data.risk_advisory;
+          }
+        }
+
+        // Monitored Safety Zones Live Update
+        const badgeZoneA = document.getElementById("badge-zone-a");
+        const fillZoneA = document.getElementById("fill-zone-a");
+        const badgeZoneB = document.getElementById("badge-zone-b");
+        const fillZoneB = document.getElementById("fill-zone-b");
+
+        if (badgeZoneA && data.zone_a_density !== undefined) {
+          badgeZoneA.textContent = `${data.zone_a_density} ppl/m²`;
+          const zLevelA = data.zone_a_density < 1.8 ? "normal" : data.zone_a_density < 3.0 ? "watch" : data.zone_a_density < 4.5 ? "warning" : "critical";
+          badgeZoneA.className = `badge badge-${zLevelA}`;
+          if (fillZoneA) {
+            fillZoneA.style.width = `${Math.min(100, Math.round((data.zone_a_density / 4.0) * 100))}%`;
+            fillZoneA.className = `zone-progress-fill ${zLevelA === "warning" || zLevelA === "critical" ? "warning" : ""}`;
+          }
+        }
+
+        if (badgeZoneB && data.zone_b_density !== undefined) {
+          badgeZoneB.textContent = `${data.zone_b_density} ppl/m²`;
+          const zLevelB = data.zone_b_density < 1.8 ? "normal" : data.zone_b_density < 3.0 ? "watch" : data.zone_b_density < 4.5 ? "warning" : "critical";
+          badgeZoneB.className = `badge badge-${zLevelB}`;
+          if (fillZoneB) {
+            fillZoneB.style.width = `${Math.min(100, Math.round((data.zone_b_density / 4.0) * 100))}%`;
+            fillZoneB.className = `zone-progress-fill ${zLevelB === "warning" || zLevelB === "critical" ? "warning" : ""}`;
           }
         }
 

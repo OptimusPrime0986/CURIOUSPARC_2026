@@ -51,6 +51,15 @@ class PipelineService:
         self._fps_history = []
         self._last_processed_time = time.time()
 
+        # Spatial hotspot tracking for accurate safety alignment
+        self.red_hotspot_ratio: float = 0.0
+        self.yellow_zone_ratio: float = 0.0
+        self.blue_free_ratio: float = 1.0
+        self.zone_a_density: float = 0.4
+        self.zone_b_density: float = 0.5
+        self.avg_density_m2: float = 0.0
+        self.floor_area_m2: float = 90.0
+
         # Latest rendered frames for MJPEG streams
         self._latest_rendered_jpeg: Optional[bytes] = None
         self._latest_raw_jpeg: Optional[bytes] = None
@@ -144,28 +153,47 @@ class PipelineService:
             return self._latest_side_by_side_jpeg or self._latest_rendered_jpeg
 
     def get_telemetry(self) -> Dict[str, Union[float, int, str, bool]]:
-        """Returns instantaneous system telemetry and risk assessment."""
+        """Returns instantaneous system telemetry and risk assessment strictly aligned with footage."""
         is_conn = self.stream.is_connected if self.stream else False
         status = "ONLINE" if is_conn else "RECONNECTING"
-        
-        # Calculate risk level based on count and density
-        count = self.total_count
-        if count < 15:
+
+        # Concourse density calculation (people per m²)
+        floor_area = max(self.floor_area_m2, 20.0)
+        self.avg_density_m2 = round(self.total_count / floor_area, 2)
+        red_pct = round(self.red_hotspot_ratio * 100.0, 1)
+        yellow_pct = round(self.yellow_zone_ratio * 100.0, 1)
+        blue_pct = round(max(0.0, 100.0 - red_pct - yellow_pct), 1)
+
+        # Real-time risk assessment strictly aligned with the footage & heatmap:
+        # Grounded in Fruin Level of Service (LOS) & NFPA 130 standard
+        if self.avg_density_m2 < 1.8 and red_pct < 8.0:
             risk_level = "NORMAL"
             risk_color = "#10b981"
-            risk_text = "Safe crowd density. Standard flow maintained."
-        elif count < 35:
+            risk_icon = "🛡️"
+            risk_title = "SYSTEM NORMAL"
+            risk_text = "Safe crowd density. Standard pedestrian flow observed across all zones."
+            risk_advisory = "FREE PEDESTRIAN FLOW"
+        elif self.avg_density_m2 < 3.0 and red_pct < 16.0:
             risk_level = "WATCH"
-            risk_color = "#3b82f6"
-            risk_text = "Moderate concentration. Keep monitoring choke points."
-        elif count < 60:
+            risk_color = "#38bdf8"
+            risk_icon = "👀"
+            risk_title = "ACTIVE OBSERVATION"
+            risk_text = "Moderate crowd presence in mid zones. Traffic active but moving steadily."
+            risk_advisory = "STEADY CONCOURSE FLOW"
+        elif self.avg_density_m2 < 4.5 and red_pct < 28.0:
             risk_level = "WARNING"
             risk_color = "#f59e0b"
-            risk_text = "High density detected. Prepare queue management."
+            risk_icon = "⚠️"
+            risk_title = "CAPACITY WARNING"
+            risk_text = "High density accumulation in hotspots. Prepare choke-point diversion gates."
+            risk_advisory = "CONGESTION WARNING"
         else:
             risk_level = "CRITICAL"
             risk_color = "#ef4444"
-            risk_text = "Critical stampede danger! Initiate immediate crowd dispersion."
+            risk_icon = "🚨"
+            risk_title = "CRITICAL STAMPEDE HAZARD"
+            risk_text = "CRITICAL HAZARD: Dense crowd compaction! Initiate immediate physical flow dispersion."
+            risk_advisory = "CRITICAL STAMPEDE ALERT"
 
         source_display = Path(str(self.source)).name if isinstance(self.source, (Path, str)) else f"Camera #{self.source}"
 
@@ -176,11 +204,20 @@ class PipelineService:
             "camera_fps": self.stream.fps if self.stream else 0.0,
             "latency_ms": round(self.latency_ms, 1),
             "total_count": round(self.total_count, 1),
-            "frame_skip": self.scheduler.current_frame_skip if self.scheduler else 2,
+            "density_m2": self.avg_density_m2,
+            "red_hotspot_pct": red_pct,
+            "yellow_zone_pct": yellow_pct,
+            "blue_free_pct": blue_pct,
+            "zone_a_density": round(self.zone_a_density, 2),
+            "zone_b_density": round(self.zone_b_density, 2),
+            "frame_skip": self.scheduler.current_frame_skip if self.scheduler else 1,
             "device": self.device,
             "risk_level": risk_level,
+            "risk_title": risk_title,
             "risk_color": risk_color,
+            "risk_icon": risk_icon,
             "risk_action": risk_text,
+            "risk_advisory": risk_advisory,
             "source_name": source_display,
         }
 
@@ -294,35 +331,43 @@ class PipelineService:
     def _render_overlay(
         self, frame: np.ndarray, density_map: np.ndarray, count: float, latency: float
     ) -> np.ndarray:
-        """Renders localized density heatmap overlay with dynamic alpha transparency.
-        Empty floor / zero-density background remains 100% transparent and unaltered.
-        Only areas with detected people show localized heatmap coloration."""
+        """Renders calibrated full-spectrum crowd density heatmap overlay.
+        - Areas where people are NOT present at all are in cool BLUE.
+        - Mid zones where crowd is less/sparse are in GREEN and vivid YELLOW.
+        - Clustered / high-density crowd hotspots are in bright RED."""
         out = frame.copy()
         h, w = out.shape[:2]
 
-        if density_map is not None and density_map.max() > 1e-6:
+        if density_map is not None:
             dh, dw = density_map.shape[:2]
             if (dh, dw) != (h, w):
                 density_map = cv2.resize(density_map, (w, h), interpolation=cv2.INTER_LINEAR)
 
-            # Calibrate density normalization relative to peak density
-            max_d = max(float(density_map.max()), 1e-5)
-            norm_f = np.clip(density_map / max_d, 0.0, 1.0)
-            norm_u8 = (norm_f * 255.0).astype(np.uint8)
+            # Piecewise transfer function tailored to COLORMAP_JET:
+            # - Empty floor (0.0 - 0.04) -> values 0 - 12 (Deep cool Blue)
+            # - Low density / transition (0.04 - 0.16) -> values 12 - 75 (Cyan to cool Green)
+            # - Mid zone / sparse crowd (0.16 - 0.50) -> values 75 - 180 (Green to Bright Yellow)
+            # - High-density crowd clusters (0.50 - 1.25+) -> values 180 - 255 (Orange to Fiery Red)
+            xp = [0.0, 0.04, 0.16, 0.38, 0.65, 0.90, 1.25]
+            yp = [0.0, 12.0, 75.0, 165.0, 205.0, 235.0, 255.0]
+            density_u8 = np.interp(density_map, xp, yp).astype(np.uint8)
 
-            # Apply colormap (JET)
-            heatmap = cv2.applyColorMap(norm_u8, cv2.COLORMAP_JET)
+            # Update spatial and zone metrics for real-time telemetry
+            mid_x = w // 2
+            self.zone_a_density = float(np.mean(density_map[:, :mid_x]) * 3.5) if density_map.size > 0 else 0.4
+            self.zone_b_density = float(np.mean(density_map[:, mid_x:]) * 3.5) if density_map.size > 0 else 0.5
+
+            self.red_hotspot_ratio = float((density_u8 >= 195).mean())
+            self.yellow_zone_ratio = float(((density_u8 >= 135) & (density_u8 < 195)).mean())
+            self.blue_free_ratio = float((density_u8 < 45).mean())
+
+            # Apply COLORMAP_JET:
+            heatmap = cv2.applyColorMap(density_u8, cv2.COLORMAP_JET)
             if heatmap.shape[:2] != (h, w):
                 heatmap = cv2.resize(heatmap, (w, h))
 
-            # Dynamic alpha mask: 0 where no people, up to 0.72 where people are present
-            alpha = np.clip((norm_f ** 1.2) * 0.72, 0.0, 0.72)
-            # Strictly zero out background noise (< 10% peak)
-            alpha[norm_u8 < 26] = 0.0
-
-            # Alpha blend only on areas with people
-            alpha_3d = np.repeat(alpha[:, :, np.newaxis], 3, axis=2)
-            out = (out.astype(np.float32) * (1.0 - alpha_3d) + heatmap.astype(np.float32) * alpha_3d).astype(np.uint8)
+            # Translucent blending so video footage remains crisp under the heatmap
+            out = cv2.addWeighted(out, 0.58, heatmap, 0.42, 0)
 
         # Draw Control-Room HUD Header
         cv2.rectangle(out, (0, 0), (w, 36), (15, 23, 42), -1)

@@ -201,44 +201,55 @@ class CLIPEBCPredictor:
 
         # 1. Multi-scale morphological pedestrian saliency
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        k_size = max(9, int(min(orig_h, orig_w) * 0.035) | 1)
+        k_size = max(11, int(min(orig_h, orig_w) * 0.045) | 1)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
-        
-        # Black-hat captures dark pedestrians on bright floors; top-hat captures light pedestrians on dark floors
+
         bh = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel).astype(np.float32)
         th = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel).astype(np.float32)
-        saliency = cv2.add(bh, th)
-        saliency = cv2.GaussianBlur(saliency, (k_size, k_size), 2.5)
+        saliency = cv2.GaussianBlur(cv2.add(bh, th), (11, 11), 2.0)
 
-        # Adaptive background thresholding - strictly zeroes out empty floor
-        bg_thresh = np.percentile(saliency, 72) + 6.0
-        active_mask = (saliency > bg_thresh).astype(np.float32)
-        person_energy = np.maximum(saliency - bg_thresh, 0.0) * active_mask
+        # 2. Adaptive floor suppression: zeroes out clean unoccupied floor
+        p_med = float(np.median(saliency))
+        p_std = float(np.std(saliency))
+        thresh = p_med + 0.35 * p_std
+        ped_signal = np.maximum(saliency - thresh, 0.0)
 
-        # 2. Smooth density surface around people clusters
-        density_map = cv2.GaussianBlur(person_energy, (k_size, k_size), 4.0)
+        # 3. Detect pedestrian centroids and cluster areas
+        _, bin_mask = cv2.threshold(ped_signal, 0.40 * p_std, 255, cv2.THRESH_BINARY)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bin_mask.astype(np.uint8))
 
-        # 3. Estimate realistic headcount via local connected components
-        norm_temp = density_map / max(density_map.max(), 1e-4)
-        _, binary = cv2.threshold((norm_temp * 255).astype(np.uint8), 30, 255, cv2.THRESH_BINARY)
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
-        
-        # Calculate people count: small blobs = 1 person, larger clusters = area proportional
+        valid_clusters = []
+        areas = []
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area >= 20:
+                areas.append(area)
+                valid_clusters.append((centroids[i], area))
+
+        median_area = float(np.median(areas)) if areas else 60.0
+
+        # 4. Continuous Gaussian crowd density field
+        # - Empty floor areas remain strictly 0.0 (renders in deep cool BLUE)
+        # - Single / sparse pedestrians have a local peak ~0.42 (renders in vivid YELLOW)
+        # - Clustered / high-density groups sum overlapping Gaussians ~0.80+ (renders in bright RED)
+        sigma = max(18.0, min(orig_h, orig_w) * 0.055)
+        rad = int(sigma * 2.8)
+
+        density_field = np.zeros((orig_h, orig_w), dtype=np.float32)
         total_count = 0.0
-        median_area = 150.0
-        for s in stats[1:]:
-            area = s[cv2.CC_STAT_AREA]
-            if area > 20:
-                people_in_cluster = max(1.0, area / median_area)
-                total_count += people_in_cluster
+
+        for (cx, cy), area in valid_clusters:
+            ppl = max(1.0, area / max(median_area * 0.85, 50.0))
+            total_count += ppl
+
+            x0 = max(0, int(cx - rad))
+            x1 = min(orig_w, int(cx + rad + 1))
+            y0 = max(0, int(cy - rad))
+            y1 = min(orig_h, int(cy + rad + 1))
+
+            gx, gy = np.meshgrid(np.arange(x0, x1) - cx, np.arange(y0, y1) - cy)
+            g = np.exp(-(gx**2 + gy**2) / (2.0 * sigma**2)) * (0.42 * min(ppl, 3.0))
+            density_field[y0:y1, x0:x1] += g
 
         total_count = float(round(total_count, 1))
-
-        # 4. Calibrate continuous density map
-        d_sum = density_map.sum()
-        if d_sum > 1e-6 and total_count > 0:
-            density_map = density_map * (total_count / d_sum)
-        else:
-            density_map = np.zeros((orig_h, orig_w), dtype=np.float32)
-
-        return density_map, total_count
+        return density_field, total_count
