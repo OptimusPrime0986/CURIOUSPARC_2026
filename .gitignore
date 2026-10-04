@@ -21,3 +21,10 @@ venv.bak/
 .DS_Store
 *.swp
 *.swo
+
+# Large binary test videos and uploads
+data/uploads/
+crowdwatch/data/uploads/
+*.mp4
+*.avi
+*.mov
