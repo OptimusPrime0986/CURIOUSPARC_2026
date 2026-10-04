@@ -51,8 +51,11 @@ class PipelineService:
         self._fps_history = []
         self._last_processed_time = time.time()
 
-        # Latest rendered frame for MJPEG stream
+        # Latest rendered frames for MJPEG streams
         self._latest_rendered_jpeg: Optional[bytes] = None
+        self._latest_raw_jpeg: Optional[bytes] = None
+        self._latest_heatmap_jpeg: Optional[bytes] = None
+        self._latest_side_by_side_jpeg: Optional[bytes] = None
         self._render_lock = threading.Lock()
         self._is_running = False
         self._worker_thread: Optional[threading.Thread] = None
@@ -83,7 +86,7 @@ class PipelineService:
         self.depth_estimator = DepthAnythingV2Predictor(model_id=depth_model_id, device=self.device)
 
         # 2. Start VideoStream
-        target_fps = self.cfg.get("input", "target_fps", 10)
+        target_fps = self.cfg.get("input", "target_fps", 15)
         self.stream = VideoStream(
             source=self.source,
             target_fps=target_fps,
@@ -113,19 +116,56 @@ class PipelineService:
         self.source = new_source
         self.stream = VideoStream(
             source=self.source,
-            target_fps=self.cfg.get("input", "target_fps", 10),
+            target_fps=self.cfg.get("input", "target_fps", 15),
             reconnect_timeout_sec=self.cfg.get("input", "reconnect_timeout_sec", 30.0),
         ).start()
 
     def get_latest_jpeg(self) -> Optional[bytes]:
-        """Returns the latest rendered JPEG frame for MJPEG streaming."""
+        """Returns the latest rendered JPEG frame (backward-compatible)."""
         with self._render_lock:
             return self._latest_rendered_jpeg
 
+    def get_latest_raw_jpeg(self) -> Optional[bytes]:
+        """Returns the raw input CCTV/camera frame without heatmap."""
+        with self._render_lock:
+            return self._latest_raw_jpeg or self._latest_rendered_jpeg
+
+    def get_latest_heatmap_jpeg(self) -> Optional[bytes]:
+        """Returns the real-time AI density heatmap overlay."""
+        with self._render_lock:
+            return self._latest_heatmap_jpeg or self._latest_rendered_jpeg
+
+    def get_latest_side_by_side_jpeg(self) -> Optional[bytes]:
+        """Returns synchronized side-by-side feed (Original Footage | AI Heatmap)."""
+        with self._render_lock:
+            return self._latest_side_by_side_jpeg or self._latest_rendered_jpeg
+
     def get_telemetry(self) -> Dict[str, Union[float, int, str, bool]]:
-        """Returns instantaneous system telemetry."""
+        """Returns instantaneous system telemetry and risk assessment."""
         is_conn = self.stream.is_connected if self.stream else False
         status = "ONLINE" if is_conn else "RECONNECTING"
+        
+        # Calculate risk level based on count and density
+        count = self.total_count
+        if count < 15:
+            risk_level = "NORMAL"
+            risk_color = "#10b981"
+            risk_text = "Safe crowd density. Standard flow maintained."
+        elif count < 35:
+            risk_level = "WATCH"
+            risk_color = "#3b82f6"
+            risk_text = "Moderate concentration. Keep monitoring choke points."
+        elif count < 60:
+            risk_level = "WARNING"
+            risk_color = "#f59e0b"
+            risk_text = "High density detected. Prepare queue management."
+        else:
+            risk_level = "CRITICAL"
+            risk_color = "#ef4444"
+            risk_text = "Critical stampede danger! Initiate immediate crowd dispersion."
+
+        source_display = Path(str(self.source)).name if isinstance(self.source, (Path, str)) else f"Camera #{self.source}"
+
         return {
             "status": status,
             "is_connected": is_conn,
@@ -135,6 +175,10 @@ class PipelineService:
             "total_count": round(self.total_count, 1),
             "frame_skip": self.scheduler.current_frame_skip if self.scheduler else 2,
             "device": self.device,
+            "risk_level": risk_level,
+            "risk_color": risk_color,
+            "risk_action": risk_text,
+            "source_name": source_display,
         }
 
     def _process_loop(self) -> None:
@@ -171,11 +215,23 @@ class PipelineService:
             self.total_count = count
             self.latency_ms = latency
 
-            # Render heatmap overlay
-            rendered = self._render_overlay(frame, density_map, count, latency)
-            _, jpeg = cv2.imencode(".jpg", rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            # Render 1: Clean Raw Frame with subtle camera HUD
+            raw_rendered = self._render_raw_view(frame)
+            _, raw_jpeg = cv2.imencode(".jpg", raw_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+            # Render 2: Heatmap Overlay with telemetry HUD
+            heatmap_rendered = self._render_overlay(frame, density_map, count, latency)
+            _, heatmap_jpeg = cv2.imencode(".jpg", heatmap_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+            # Render 3: Synchronized Side-by-Side Composite
+            sbs_rendered = self._render_side_by_side(raw_rendered, heatmap_rendered)
+            _, sbs_jpeg = cv2.imencode(".jpg", sbs_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
             with self._render_lock:
-                self._latest_rendered_jpeg = jpeg.tobytes()
+                self._latest_raw_jpeg = raw_jpeg.tobytes()
+                self._latest_heatmap_jpeg = heatmap_jpeg.tobytes()
+                self._latest_side_by_side_jpeg = sbs_jpeg.tobytes()
+                self._latest_rendered_jpeg = heatmap_jpeg.tobytes()
 
             # Measure processed FPS
             now = time.perf_counter()
@@ -193,6 +249,37 @@ class PipelineService:
             if sleep_time > 0.001:
                 time.sleep(sleep_time)
 
+    def _render_raw_view(self, frame: np.ndarray) -> np.ndarray:
+        """Renders original camera / mobile footage with clean HUD."""
+        out = frame.copy()
+        h, w = out.shape[:2]
+        # Top banner
+        cv2.rectangle(out, (0, 0), (w, 36), (15, 23, 42), -1)
+        src_name = Path(str(self.source)).name if isinstance(self.source, (Path, str)) else f"Cam #{self.source}"
+        cv2.putText(
+            out,
+            f"ORIGINAL FOOTAGE (CCTV / MOBILE) | Source: {src_name}",
+            (12, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (240, 240, 245),
+            1,
+            cv2.LINE_AA,
+        )
+        # Live badge
+        cv2.circle(out, (w - 75, 18), 5, (0, 220, 100), -1)
+        cv2.putText(
+            out,
+            "LIVE",
+            (w - 62, 23),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 220, 100),
+            1,
+            cv2.LINE_AA,
+        )
+        return out
+
     def _render_overlay(
         self, frame: np.ndarray, density_map: np.ndarray, count: float, latency: float
     ) -> np.ndarray:
@@ -201,15 +288,15 @@ class PipelineService:
         if density_map is not None:
             norm = cv2.normalize(density_map, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
             heatmap = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
-            out = cv2.addWeighted(out, 0.65, heatmap, 0.35, 0)
+            out = cv2.addWeighted(out, 0.60, heatmap, 0.40, 0)
 
         # Draw Control-Room HUD Header
         h, w = out.shape[:2]
         cv2.rectangle(out, (0, 0), (w, 36), (15, 23, 42), -1)
 
         hud_text = (
-            f"FPS: {self.processed_fps:.1f} | Latency: {latency:.1f}ms | "
-            f"Est. People: {count:.0f} | Skip: N={self.scheduler.current_frame_skip}"
+            f"AI HEATMAP | Est: {count:.0f} ppl | {self.processed_fps:.1f} FPS | "
+            f"Lat: {latency:.0f}ms"
         )
         cv2.putText(
             out,
@@ -226,16 +313,35 @@ class PipelineService:
         if "sample_crowd" in str(self.source):
             cv2.putText(
                 out,
-                "[SIMULATED FEED]",
-                (w - 180, 24),
+                "[SIMULATED]",
+                (w - 120, 24),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
+                0.5,
                 (0, 200, 255),
                 2,
                 cv2.LINE_AA,
             )
 
         return out
+
+    def _render_side_by_side(self, raw_frame: np.ndarray, heatmap_frame: np.ndarray) -> np.ndarray:
+        """Horizontally stacks raw footage and AI heatmap with a divider."""
+        # Normalize height if dimensions differ
+        h1, w1 = raw_frame.shape[:2]
+        h2, w2 = heatmap_frame.shape[:2]
+        target_h = min(h1, h2, 480)
+        
+        scale1 = target_h / h1
+        scale2 = target_h / h2
+        
+        f1 = cv2.resize(raw_frame, (int(w1 * scale1), target_h))
+        f2 = cv2.resize(heatmap_frame, (int(w2 * scale2), target_h))
+        
+        # Center divider border
+        divider = np.full((target_h, 6, 3), 40, dtype=np.uint8)
+        divider[:, 2:4] = (0, 200, 255) # cyan separator line
+        
+        return np.hstack([f1, divider, f2])
 
 
 # Global singleton pipeline instance

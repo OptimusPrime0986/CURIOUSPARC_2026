@@ -7,7 +7,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import re
+import shutil
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +20,10 @@ from src.config import get_config
 
 logger = logging.getLogger("crowdwatch.api")
 
-WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+WEB_DIR = PROJECT_ROOT / "web"
+UPLOAD_DIR = PROJECT_ROOT / "data" / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -80,30 +85,93 @@ async def get_configuration() -> Dict[str, Any]:
 
 
 class SourceRequest(BaseModel):
-    source_type: str  # "file", "webcam", "rtsp"
+    source_type: str  # "file", "webcam", "rtsp", "url", "preset"
     source_value: str
 
 
 @app.post("/api/stream/source")
 async def set_source(req: SourceRequest) -> Dict[str, str]:
-    """Switches the active video ingestion source."""
+    """Switches the active video ingestion source (webcam, RTSP, mobile stream, or file)."""
     pipeline = get_pipeline()
+    val = req.source_value.strip()
+
     if req.source_type == "webcam":
-        src = int(req.source_value) if req.source_value.isdigit() else 0
-    elif req.source_type == "file":
-        src = Path(req.source_value)
+        src = int(val) if val.isdigit() else 0
+    elif req.source_type in ("file", "preset"):
+        p = Path(val)
+        if not p.is_absolute():
+            p = PROJECT_ROOT / p
+        src = p
+    elif req.source_type in ("rtsp", "url", "stream"):
+        src = val
     else:
-        src = req.source_value
+        src = val
 
     pipeline.change_source(src)
     return {"status": "ok", "new_source": str(src)}
 
 
-def mjpeg_frame_generator():
+@app.post("/api/upload/video")
+async def upload_video(file: UploadFile = File(...)) -> Dict[str, str]:
+    """Uploads a video from phone/laptop and directly connects it to the AI pipeline."""
+    clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", file.filename)
+    target_path = UPLOAD_DIR / clean_name
+
+    with target_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    logger.info("Uploaded video received & saved to: %s", target_path)
+    pipeline = get_pipeline()
+    pipeline.change_source(target_path)
+    return {
+        "status": "ok",
+        "filename": clean_name,
+        "source": str(target_path),
+        "message": f"Successfully activated uploaded clip: {clean_name}",
+    }
+
+
+@app.get("/api/videos/list")
+async def list_available_videos() -> Dict[str, Any]:
+    """Returns list of all available test clips (pre-loaded and user-uploaded)."""
+    data_dir = PROJECT_ROOT / "data"
+    videos = []
+    
+    # Pre-loaded in data/
+    for ext in ("*.mp4", "*.avi", "*.mov", "*.mkv"):
+        for f in data_dir.glob(ext):
+            videos.append({
+                "name": f.name,
+                "path": str(f.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+                "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
+                "type": "sample",
+            })
+            
+    # User uploaded
+    if UPLOAD_DIR.exists():
+        for ext in ("*.mp4", "*.avi", "*.mov", "*.mkv"):
+            for f in UPLOAD_DIR.glob(ext):
+                videos.append({
+                    "name": f.name,
+                    "path": str(f.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+                    "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
+                    "type": "uploaded",
+                })
+                
+    return {"videos": videos}
+
+
+def mjpeg_frame_generator(stream_mode: str = "heatmap"):
     """Yields continuous JPEG frames formatted as multipart MJPEG stream."""
     pipeline = get_pipeline()
     while True:
-        jpeg_bytes = pipeline.get_latest_jpeg()
+        if stream_mode == "raw":
+            jpeg_bytes = pipeline.get_latest_raw_jpeg()
+        elif stream_mode == "sidebyside":
+            jpeg_bytes = pipeline.get_latest_side_by_side_jpeg()
+        else:
+            jpeg_bytes = pipeline.get_latest_heatmap_jpeg()
+
         if jpeg_bytes is not None:
             yield (
                 b"--frame\r\n"
@@ -115,9 +183,36 @@ def mjpeg_frame_generator():
 
 @app.get("/api/stream/live")
 async def live_stream():
-    """Streams real-time MJPEG video with live heatmap overlay."""
+    """Streams real-time MJPEG video with live heatmap overlay (compatibility)."""
     return StreamingResponse(
-        mjpeg_frame_generator(),
+        mjpeg_frame_generator("heatmap"),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/api/stream/raw")
+async def raw_stream():
+    """Streams original unaltered CCTV / phone camera feed."""
+    return StreamingResponse(
+        mjpeg_frame_generator("raw"),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/api/stream/heatmap")
+async def heatmap_stream():
+    """Streams real-time AI density heatmap overlay."""
+    return StreamingResponse(
+        mjpeg_frame_generator("heatmap"),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/api/stream/sidebyside")
+async def sidebyside_stream():
+    """Streams synchronized side-by-side view (Original Footage | AI Heatmap)."""
+    return StreamingResponse(
+        mjpeg_frame_generator("sidebyside"),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -139,3 +234,4 @@ async def websocket_telemetry(websocket: WebSocket):
 # Mount static assets if web directory exists
 if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+

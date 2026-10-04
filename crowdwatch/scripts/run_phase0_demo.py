@@ -29,7 +29,7 @@ def run_phase0():
     logger.info("Loaded config: %s (device=%s)", cfg.get("system", "app_name"), device)
 
     # 2. Ensure sample clip exists
-    sample_video_path = PROJECT_ROOT / "data" / "sample_crowd.mp4"
+    sample_video_path = PROJECT_ROOT / "data" / "real_crowd_test.mp4"
     if not sample_video_path.exists():
         logger.info("Generating synthetic crowd sample clip at %s", sample_video_path)
         generate_crowd_video(sample_video_path)

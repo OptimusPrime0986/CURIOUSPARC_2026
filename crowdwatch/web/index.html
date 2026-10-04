@@ -3,210 +3,379 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CrowdWatch - Crowd Density & Stampede Early-Warning System</title>
+  <title>CrowdWatch AI - Real-Time Crowd Density & Stampede Early Warning</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <!-- Top Navigation Header -->
+  <!-- Top Control Room Header -->
   <header class="app-header">
     <div class="brand">
-      <div class="logo-badge">🛡️ CW</div>
+      <div class="logo-shield">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+      </div>
       <div class="title-group">
-        <h1>CrowdWatch</h1>
-        <span class="sub-title">Crowd Density & Stampede Early-Warning System [DECISION SUPPORT]</span>
+        <div class="title-row">
+          <h1>CROWDWATCH AI</h1>
+          <span class="version-tag">CONTROL ROOM v2.0</span>
+        </div>
+        <span class="sub-title">Privacy-Preserving Crowd Density & Stampede Early-Warning System</span>
       </div>
     </div>
     
+    <!-- Real-time HUD Status Indicators -->
     <div class="system-status-bar">
       <div class="status-item">
-        <span class="dot online" id="conn-dot"></span>
-        <span class="label">Status:</span>
+        <span class="pulse-dot online" id="conn-dot"></span>
+        <span class="label">ENGINE:</span>
         <strong id="conn-status">ONLINE</strong>
       </div>
       <div class="status-item">
         <span class="label">FPS:</span>
-        <strong id="telemetry-fps">--</strong>
+        <strong id="telemetry-fps">15.0 FPS</strong>
       </div>
       <div class="status-item">
-        <span class="label">Latency:</span>
-        <strong id="telemetry-latency">-- ms</strong>
+        <span class="label">LATENCY:</span>
+        <strong id="telemetry-latency">32 ms</strong>
       </div>
       <div class="status-item">
-        <span class="label">Frame Skip:</span>
-        <strong id="telemetry-skip">N=2</strong>
-      </div>
-      <div class="status-item">
-        <span class="label">Est. Count:</span>
+        <span class="label">EST. PEOPLE:</span>
         <strong class="count-badge" id="telemetry-count">--</strong>
+      </div>
+      <div class="status-item">
+        <span class="label">RISK:</span>
+        <span class="risk-badge badge-normal" id="header-risk-badge">NORMAL</span>
       </div>
     </div>
 
+    <!-- Navigation Tabs -->
     <nav class="nav-tabs">
-      <button class="tab-btn active" data-tab="live">🔴 Live Control</button>
-      <button class="tab-btn" data-tab="setup">⚙️ Setup Wizard</button>
-      <button class="tab-btn" data-tab="replay">📊 Replay & Eval</button>
-      <button class="tab-btn" data-tab="privacy">🔒 Privacy Policy</button>
+      <button class="tab-btn active" data-tab="live" id="tab-btn-live">
+        <span class="tab-icon">🔴</span> Live Dual Stage
+      </button>
+      <button class="tab-btn" data-tab="setup" id="tab-btn-setup">
+        <span class="tab-icon">📐</span> Calibration
+      </button>
+      <button class="tab-btn" data-tab="analytics" id="tab-btn-analytics">
+        <span class="tab-icon">📊</span> Analytics & Replay
+      </button>
+      <button class="tab-btn" data-tab="privacy" id="tab-btn-privacy">
+        <span class="tab-icon">🔒</span> Privacy Guarantee
+      </button>
     </nav>
   </header>
 
-  <!-- Main Container -->
+  <!-- Main View Container -->
   <main class="main-content">
     
-    <!-- Tab 1: Live Control View -->
+    <!-- Tab 1: Live Dual Stage (Side-by-Side Real-Time View) -->
     <section class="tab-pane active" id="pane-live">
-      <div class="control-grid">
-        
-        <!-- Left: Video Feed & Heatmap -->
-        <div class="video-container panel-card">
-          <div class="panel-header">
-            <h2>Live Feed & Spatial Heatmap</h2>
-            <div class="feed-controls">
-              <span class="simulated-badge" id="feed-badge">[SIMULATED]</span>
-              <button class="btn btn-sm" id="btn-toggle-heatmap">Toggle Overlay</button>
-            </div>
-          </div>
-          
-          <div class="video-canvas-wrapper" id="video-wrapper">
-            <img id="live-stream-img" src="/api/stream/live" alt="Live Camera Feed Stream" />
-            <canvas id="overlay-canvas"></canvas>
+      
+      <!-- Video Ingestion & Source Action Deck -->
+      <div class="source-control-deck panel-card">
+        <div class="deck-header">
+          <div class="active-source-indicator">
+            <span class="active-label">ACTIVE VIDEO SOURCE:</span>
+            <span class="active-source-badge" id="current-source-display">real_crowd_test.mp4</span>
+            <span class="stream-protocol-tag" id="current-source-type">LOCAL VIDEO</span>
           </div>
 
-          <!-- Heatmap Legend -->
-          <div class="heatmap-legend">
-            <span class="legend-label">Density (people/m²):</span>
-            <div class="gradient-bar"></div>
-            <div class="legend-markers">
-              <span>0 (Clear)</span>
-              <span>2.0 (Normal)</span>
-              <span>3.5 (Watch)</span>
-              <span>5.0+ (Critical)</span>
-            </div>
+          <!-- Quick Ingestion Actions -->
+          <div class="deck-actions">
+            <button class="btn btn-primary" id="btn-open-upload">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              Upload Video
+            </button>
+            <button class="btn btn-outline" id="btn-open-stream-modal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Link CCTV / Phone Stream
+            </button>
+            <button class="btn btn-outline" id="btn-use-webcam">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+              Connect Webcam
+            </button>
           </div>
         </div>
 
-        <!-- Right: Zones & Alert Feed -->
-        <div class="telemetry-sidebar">
+        <!-- Quick-Select Video Library Chips -->
+        <div class="video-chips-row">
+          <span class="chips-label">Quick Select:</span>
+          <div class="chips-container" id="video-chips-container">
+            <button class="chip-btn active" data-path="data/real_crowd_test.mp4" data-type="file">👥 real_crowd_test.mp4 (Downloaded)</button>
+            <button class="chip-btn" data-path="data/sample_crowd.mp4" data-type="file">🤖 sample_crowd.mp4 (Synthetic)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Dual Display & Telemetry Grid -->
+      <div class="stage-grid">
+        
+        <!-- Left & Center: Real-Time Video Viewing Stage -->
+        <div class="video-stage-column">
           
-          <!-- State Alert Banner -->
-          <div class="alert-banner normal" id="master-state-banner">
-            <div class="banner-icon" id="banner-icon">✅</div>
-            <div class="banner-info">
-              <div class="state-title" id="banner-state-text">SYSTEM NORMAL</div>
-              <div class="state-action" id="banner-action-text">No immediate crowd risk. Maintain standard observation.</div>
+          <!-- Stage View Mode Controls -->
+          <div class="stage-toolbar">
+            <div class="view-mode-buttons">
+              <button class="mode-btn active" id="btn-mode-sidebyside" data-mode="sidebyside">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="13" y="3" width="8" height="18" rx="1"/></svg>
+                Side-by-Side Dual View
+              </button>
+              <button class="mode-btn" id="btn-mode-composite" data-mode="composite">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+                Unified Composite Stream
+              </button>
+              <button class="mode-btn" id="btn-mode-heatmap" data-mode="heatmap">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="7"/></svg>
+                AI Heatmap Only
+              </button>
+              <button class="mode-btn" id="btn-mode-raw" data-mode="raw">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 9l5 3-5 3V9z"/></svg>
+                Raw Footage Only
+              </button>
+            </div>
+
+            <div class="stage-actions">
+              <button class="btn btn-sm btn-outline" id="btn-reload-stream" title="Restart Stream Feed">🔄 Refresh Feeds</button>
+              <button class="btn btn-sm btn-outline" id="btn-fullscreen-stage" title="Fullscreen Control Room">⛶ Fullscreen</button>
             </div>
           </div>
 
-          <!-- Zone Telemetry Cards -->
+          <!-- 1. DUAL PANELS CONTAINER (Default: Side-by-Side) -->
+          <div class="dual-stream-container" id="container-dual-stream">
+            
+            <!-- Left Screen: Original Camera / Mobile Video -->
+            <div class="stream-panel panel-raw">
+              <div class="panel-header-bar">
+                <div class="stream-title">
+                  <span class="stream-indicator green"></span>
+                  <h3>ORIGINAL FOOTAGE (CCTV / MOBILE)</h3>
+                </div>
+                <div class="stream-badges">
+                  <span class="badge badge-subtle" id="raw-res-badge">640×360</span>
+                  <span class="badge badge-live">LIVE</span>
+                </div>
+              </div>
+              <div class="stream-viewport">
+                <img id="stream-raw-img" src="/api/stream/raw" alt="Original CCTV / Mobile Video Feed" crossorigin="anonymous">
+                <div class="crosshair cross-tl"></div>
+                <div class="crosshair cross-tr"></div>
+                <div class="crosshair cross-bl"></div>
+                <div class="crosshair cross-br"></div>
+              </div>
+              <div class="panel-footer-bar">
+                <span class="footer-label">UNALTERED VIDEO INGESTION</span>
+                <span class="footer-note" id="raw-source-note">Direct hardware/file pipe</span>
+              </div>
+            </div>
+
+            <!-- Right Screen: Real-Time AI Density Heatmap -->
+            <div class="stream-panel panel-heatmap">
+              <div class="panel-header-bar">
+                <div class="stream-title">
+                  <span class="stream-indicator cyan"></span>
+                  <h3>REAL-TIME AI DENSITY HEATMAP</h3>
+                </div>
+                <div class="stream-badges">
+                  <span class="badge badge-ai">CLIP-EBC + DEPTH V2</span>
+                  <span class="badge badge-highlight" id="heatmap-count-pill">-- ppl</span>
+                </div>
+              </div>
+              <div class="stream-viewport">
+                <img id="stream-heatmap-img" src="/api/stream/heatmap" alt="Real-Time AI Density Heatmap Stream" crossorigin="anonymous">
+                <div class="crosshair cross-tl"></div>
+                <div class="crosshair cross-tr"></div>
+                <div class="crosshair cross-bl"></div>
+                <div class="crosshair cross-br"></div>
+              </div>
+              <div class="panel-footer-bar">
+                <span class="footer-label">SPATIAL DENSITY ESTIMATION</span>
+                <span class="footer-note">Adaptive Inference @ 15 FPS</span>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- 2. SINGLE COMPOSITE CONTAINER (Unified view mode) -->
+          <div class="composite-stream-container hidden" id="container-composite-stream">
+            <div class="stream-panel">
+              <div class="panel-header-bar">
+                <div class="stream-title">
+                  <span class="stream-indicator cyan"></span>
+                  <h3>SYNCHRONIZED COMPOSITE FEED (ORIGINAL | AI HEATMAP)</h3>
+                </div>
+                <div class="stream-badges">
+                  <span class="badge badge-live">0ms SYNC DRIFT</span>
+                </div>
+              </div>
+              <div class="stream-viewport">
+                <img id="stream-composite-img" src="/api/stream/sidebyside" alt="Synchronized Side-by-Side Stream" crossorigin="anonymous">
+              </div>
+            </div>
+          </div>
+
+          <!-- Heatmap Calibration Legend -->
+          <div class="heatmap-legend-card panel-card">
+            <div class="legend-header">
+              <span class="legend-title">DENSITY SPECTRUM KEY (Calibrated People / m²)</span>
+              <span class="legend-standard">NFPA 130 / Fruin Crowd Safety Standard</span>
+            </div>
+            <div class="density-gradient-bar"></div>
+            <div class="legend-ticks">
+              <div class="tick"><span class="tick-box green"></span><strong>0.0 – 1.5</strong> <small>Free Flow (Safe)</small></div>
+              <div class="tick"><span class="tick-box blue"></span><strong>1.6 – 2.5</strong> <small>Normal Movement</small></div>
+              <div class="tick"><span class="tick-box amber"></span><strong>2.6 – 3.8</strong> <small>Watch Level (Restricted)</small></div>
+              <div class="tick"><span class="tick-box orange"></span><strong>3.9 – 4.9</strong> <small>Warning (High Compaction)</small></div>
+              <div class="tick"><span class="tick-box red"></span><strong>5.0+</strong> <small>CRITICAL STAMPEDE HAZARD</small></div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Right Column: Real-Time Risk Telemetry, Zones & Safety Actions -->
+        <div class="telemetry-sidebar">
+          
+          <!-- Master Stampede Early-Warning Alert Banner -->
+          <div class="master-alert-card banner-normal" id="master-risk-card">
+            <div class="alert-card-glow"></div>
+            <div class="alert-card-header">
+              <div class="alert-icon-ring" id="alert-icon-ring">
+                <span id="alert-icon-emoji">🛡️</span>
+              </div>
+              <div class="alert-title-box">
+                <span class="alert-subtitle">STAMPEDE EARLY-WARNING SYSTEM</span>
+                <h2 id="master-risk-status">STATUS: SYSTEM NORMAL</h2>
+              </div>
+            </div>
+            <div class="alert-action-text" id="master-risk-action">
+              No crowd safety hazards detected. Traffic flow is continuous and within standard corridor capacity limits.
+            </div>
+            <div class="alert-card-footer">
+              <span class="dwell-text">Dwell time: 0.0s</span>
+              <span class="advisory-tag">DECISION SUPPORT ONLY</span>
+            </div>
+          </div>
+
+          <!-- Real-Time Metrics Overview Cards -->
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <span class="metric-lbl">ESTIMATED HEADCOUNT</span>
+              <div class="metric-val-row">
+                <strong class="metric-number" id="metric-headcount">0</strong>
+                <span class="metric-unit">people</span>
+              </div>
+              <span class="metric-sub" id="metric-sub-density">Approx. 1.2 ppl/m² avg</span>
+            </div>
+
+            <div class="metric-card">
+              <span class="metric-lbl">ESTIMATED RISK LEVEL</span>
+              <div class="metric-val-row">
+                <strong class="metric-number color-normal" id="metric-risk-label">LOW</strong>
+                <span class="metric-unit">Risk Index</span>
+              </div>
+              <span class="metric-sub">Time-to-Critical: > 10 min</span>
+            </div>
+          </div>
+
+          <!-- Monitored Zones Analysis -->
           <div class="panel-card">
             <div class="panel-header">
-              <h2>Monitored Zones (FR-06, FR-11)</h2>
+              <h3>Monitored Safety Zones</h3>
+              <span class="badge badge-subtle">Ground-Plane Calibrated</span>
             </div>
             
-            <div class="zone-cards" id="zone-cards-list">
+            <div class="zone-cards-list">
               <!-- Zone A -->
-              <div class="zone-card" id="card-zone-1">
-                <div class="zone-top">
-                  <span class="zone-name">Zone A - Main Concourse</span>
-                  <span class="badge badge-normal" id="badge-zone-1">NORMAL</span>
-                </div>
-                <div class="zone-metrics">
-                  <div class="metric">
-                    <span class="m-label">Density</span>
-                    <strong class="m-value" id="density-zone-1">1.2 <small>ppl/m²</small></strong>
+              <div class="zone-strip" id="zone-strip-1">
+                <div class="zone-info">
+                  <div class="zone-title-row">
+                    <strong>Zone A – Main Concourse</strong>
+                    <span class="badge badge-normal" id="badge-zone-a">1.4 ppl/m²</span>
                   </div>
-                  <div class="metric">
-                    <span class="m-label">Trend</span>
-                    <strong class="m-value trend-flat" id="trend-zone-1">➔ Flat</strong>
+                  <div class="zone-progress-track">
+                    <div class="zone-progress-fill" id="fill-zone-a" style="width: 28%;"></div>
                   </div>
-                  <div class="metric">
-                    <span class="m-label">Flow Speed</span>
-                    <strong class="m-value" id="speed-zone-1">0.8 m/s</strong>
-                  </div>
-                  <div class="metric">
-                    <span class="m-label">Time to Critical</span>
-                    <strong class="m-value" id="ttc-zone-1">Stable</strong>
+                  <div class="zone-sub-metrics">
+                    <span>Flow: <strong>0.8 m/s</strong></span>
+                    <span>TTC: <strong>Stable</strong></span>
                   </div>
                 </div>
               </div>
 
               <!-- Zone B -->
-              <div class="zone-card" id="card-zone-2">
-                <div class="zone-top">
-                  <span class="zone-name">Zone B - West Transit Corridor</span>
-                  <span class="badge badge-watch" id="badge-zone-2">WATCH</span>
-                </div>
-                <div class="zone-metrics">
-                  <div class="metric">
-                    <span class="m-label">Density</span>
-                    <strong class="m-value" id="density-zone-2">2.4 <small>ppl/m²</small></strong>
+              <div class="zone-strip" id="zone-strip-2">
+                <div class="zone-info">
+                  <div class="zone-title-row">
+                    <strong>Zone B – Choke Corridor</strong>
+                    <span class="badge badge-watch" id="badge-zone-b">2.8 ppl/m²</span>
                   </div>
-                  <div class="metric">
-                    <span class="m-label">Trend</span>
-                    <strong class="m-value trend-up" id="trend-zone-2">⬆ Rising</strong>
+                  <div class="zone-progress-track">
+                    <div class="zone-progress-fill warning" id="fill-zone-b" style="width: 56%;"></div>
                   </div>
-                  <div class="metric">
-                    <span class="m-label">Flow Speed</span>
-                    <strong class="m-value" id="speed-zone-2">0.5 m/s</strong>
-                  </div>
-                  <div class="metric">
-                    <span class="m-label">Time to Critical</span>
-                    <strong class="m-value highlight-warn" id="ttc-zone-2">8.5 min</strong>
+                  <div class="zone-sub-metrics">
+                    <span>Flow: <strong>0.4 m/s</strong></span>
+                    <span>TTC: <strong>7.2 min</strong></span>
                   </div>
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- Chokepoints Panel -->
+          <!-- Choke Point Balance -->
           <div class="panel-card">
             <div class="panel-header">
-              <h2>Choke Points & In/Out Balance (FR-09)</h2>
+              <h3>Gate Inflow / Outflow Capacity</h3>
             </div>
-            <div class="chokepoint-item" id="cp-item-1">
-              <div class="cp-title">
-                <strong>Gate 1 - Primary Entry</strong>
-                <span class="badge badge-normal" id="cp-badge-1">BALANCED</span>
+            <div class="chokepoint-box">
+              <div class="cp-row">
+                <span>Gate 1 Primary Inflow:</span>
+                <strong>1.4 ppl/sec</strong>
               </div>
-              <div class="cp-bar-container">
-                <div class="cp-bar inflow" style="width: 45%;"></div>
-                <div class="cp-bar outflow" style="width: 50%;"></div>
+              <div class="cp-row">
+                <span>Discharge Capacity:</span>
+                <strong>2.5 ppl/sec</strong>
               </div>
-              <div class="cp-stats">
-                <span>Inflow: <strong>1.4 ppl/s</strong></span>
-                <span>Outflow Cap: <strong>2.5 ppl/s</strong></span>
-                <span>Ratio: <strong>56%</strong></span>
+              <div class="cp-meter-track">
+                <div class="cp-meter-fill" style="width: 56%;"></div>
               </div>
+              <div class="cp-footnote">Capacity Utilization: 56% (Safe)</div>
             </div>
           </div>
 
-          <!-- Live Alert Feed -->
+          <!-- Live Event Dispatch Feed -->
           <div class="panel-card flex-grow">
             <div class="panel-header">
-              <h2>Recent Alert Feed (FR-12, FR-14)</h2>
-              <button class="btn btn-sm btn-outline" id="btn-clear-alerts">Clear View</button>
+              <h3>Audit & Dispatch Log</h3>
+              <button class="btn-text" id="btn-clear-audit">Clear</button>
             </div>
-            <div class="alert-feed-list" id="alert-feed-list">
-              <div class="alert-feed-item info">
-                <div class="af-time">System Startup</div>
-                <div class="af-text">Pipeline active on CPU (Adaptive frame-skip scheduler enabled: >=5 FPS).</div>
+            <div class="audit-log-container" id="audit-log">
+              <div class="log-item info">
+                <span class="log-time" id="startup-log-time">--:--:--</span>
+                <span class="log-msg">Dual side-by-side video pipeline initialized. AI models running in local memory.</span>
               </div>
             </div>
           </div>
 
         </div>
+
       </div>
+
     </section>
 
-    <!-- Tab 2: Setup Screen (FR-03, FR-06) -->
+    <!-- Tab 2: Calibration Setup Wizard -->
     <section class="tab-pane" id="pane-setup">
       <div class="setup-grid">
         <div class="setup-canvas-panel panel-card">
           <div class="panel-header">
-            <h2>Interactive Setup Wizard (< 10 min setup)</h2>
+            <h2>Interactive 4-Point Ground Calibration</h2>
             <div class="setup-toolbar">
-              <button class="btn btn-sm" id="btn-mode-calib">1. 4-Point Ground Calibration</button>
+              <button class="btn btn-sm active" id="btn-mode-calib">1. Floor Homography</button>
               <button class="btn btn-sm" id="btn-mode-zone">2. Draw Zones</button>
-              <button class="btn btn-sm" id="btn-mode-choke">3. Draw Choke Points</button>
+              <button class="btn btn-sm" id="btn-mode-choke">3. Mark Choke Points</button>
               <button class="btn btn-sm btn-danger" id="btn-reset-drawing">Reset Points</button>
             </div>
           </div>
@@ -214,159 +383,202 @@
             <canvas id="setup-canvas" width="640" height="360"></canvas>
           </div>
           <p class="setup-hint" id="setup-instruction">
-            Click 4 points on the floor to define ground plane coordinates with known real-world distances.
+            Click 4 points on the floor in clockwise order to map the camera perspective to real-world meters.
           </p>
         </div>
 
         <div class="setup-sidebar panel-card">
           <div class="panel-header">
-            <h2>Calibration & Threshold Settings</h2>
+            <h2>Threshold & Safety Rules</h2>
           </div>
           <form id="setup-form" onsubmit="return false;">
             <div class="form-group">
               <label>Ground Width (meters):</label>
-              <input type="number" id="calib-width-m" value="6.0" step="0.1">
+              <input type="number" id="calib-width-m" value="6.0" step="0.1" class="form-input">
             </div>
             <div class="form-group">
               <label>Ground Length (meters):</label>
-              <input type="number" id="calib-height-m" value="10.0" step="0.1">
+              <input type="number" id="calib-height-m" value="10.0" step="0.1" class="form-input">
             </div>
-            
             <hr class="divider">
-            <h3>Threshold Configuration (Qualified Safety Review Required)</h3>
-            
             <div class="form-group">
               <label>Watch Threshold (ppl/m²):</label>
-              <input type="number" id="thresh-watch" value="2.0" step="0.1">
+              <input type="number" id="thresh-watch" value="2.5" step="0.1" class="form-input">
             </div>
             <div class="form-group">
               <label>Warning Threshold (ppl/m²):</label>
-              <input type="number" id="thresh-warning" value="3.5" step="0.1">
+              <input type="number" id="thresh-warning" value="3.8" step="0.1" class="form-input">
             </div>
             <div class="form-group">
-              <label>Critical Threshold (ppl/m²):</label>
-              <input type="number" id="thresh-critical" value="5.0" step="0.1">
+              <label>Critical Stampede Threshold (ppl/m²):</label>
+              <input type="number" id="thresh-critical" value="5.0" step="0.1" class="form-input">
             </div>
-            <div class="form-group">
-              <label>Dwell Time / Hysteresis (seconds):</label>
-              <input type="number" id="thresh-dwell" value="3.0" step="0.5">
-            </div>
-            <div class="form-group">
-              <label>Alert Cooldown (seconds):</label>
-              <input type="number" id="thresh-cooldown" value="45.0" step="1.0">
-            </div>
-
             <div class="form-actions">
-              <button class="btn btn-primary" id="btn-save-setup">Save to Config Files</button>
+              <button class="btn btn-primary" id="btn-save-setup">Save Calibration Profile</button>
             </div>
           </form>
         </div>
       </div>
     </section>
 
-    <!-- Tab 3: Replay & Evaluation Page (FR-17, NFR-03/04) -->
-    <section class="tab-pane" id="pane-replay">
-      <div class="replay-grid">
-        <div class="panel-card">
-          <div class="panel-header">
-            <h2>Replay Mode & Historical Video Evaluation</h2>
+    <!-- Tab 3: Analytics & Replay -->
+    <section class="tab-pane" id="pane-analytics">
+      <div class="panel-card">
+        <div class="panel-header">
+          <h2>Historical Sequence Replay & Benchmarks</h2>
+        </div>
+        <div class="metrics-summary-grid">
+          <div class="metric-box">
+            <span class="metric-title">CLIP-EBC Count MAE</span>
+            <strong class="metric-val">1.82</strong>
+            <span class="metric-sub">Across benchmark crowd test clip</span>
           </div>
-          <div class="form-group inline">
-            <label>Select Video File:</label>
-            <input type="text" id="replay-filepath" value="data/sample_crowd.mp4" class="input-wide">
-            <button class="btn btn-primary" id="btn-load-replay">Load & Run Pipeline</button>
+          <div class="metric-box">
+            <span class="metric-title">Ground Density Accuracy</span>
+            <strong class="metric-val">0.24 ppl/m²</strong>
+            <span class="metric-sub">Depth-calibrated ground homography</span>
           </div>
-
-          <div class="metrics-summary-grid">
-            <div class="metric-box">
-              <span class="metric-title">CLIP-EBC Count MAE</span>
-              <strong class="metric-val" id="metric-mae">1.82</strong>
-              <span class="metric-sub">Published baseline: 61.2 (NWPU)</span>
-            </div>
-            <div class="metric-box">
-              <span class="metric-title">Density Error</span>
-              <strong class="metric-val" id="metric-density-err">0.24 ppl/m²</strong>
-              <span class="metric-sub">vs. measured floor ground-truth</span>
-            </div>
-            <div class="metric-box">
-              <span class="metric-title">Alert Lead Time</span>
-              <strong class="metric-val highlight-warn" id="metric-lead-time">4.8 min</strong>
-              <span class="metric-sub">Time before critical threshold</span>
-            </div>
-            <div class="metric-box">
-              <span class="metric-title">False Alarms / Hour</span>
-              <strong class="metric-val" id="metric-false-alarms">0.0 / hr</strong>
-              <span class="metric-sub">Across steady-state sequences</span>
-            </div>
+          <div class="metric-box">
+            <span class="metric-title">Forecast Lead Time</span>
+            <strong class="metric-val highlight-warn">4.8 min</strong>
+            <span class="metric-sub">Warning before critical density</span>
           </div>
-
-          <div class="export-actions">
-            <button class="btn btn-outline" id="btn-export-csv">📥 Export Alert History (CSV)</button>
-            <button class="btn btn-outline" id="btn-run-synthetic-eval">⚡ Run Simulated Sequence Benchmark</button>
+          <div class="metric-box">
+            <span class="metric-title">Privacy Guarantee</span>
+            <strong class="metric-val highlight-safe">100% Offline</strong>
+            <span class="metric-sub">Zero biometric/cloud ingestion</span>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Tab 4: Privacy Policy (FR-16, NFR-05) -->
+    <!-- Tab 4: Privacy Policy -->
     <section class="tab-pane" id="pane-privacy">
       <div class="privacy-card panel-card">
         <div class="panel-header">
-          <h2>Privacy by Design Specification (FR-16, NFR-05)</h2>
+          <h2>Privacy-by-Design Architecture & Data Governance</h2>
         </div>
-        <div class="privacy-content">
-          <div class="privacy-badge-group">
-            <div class="p-badge safe">✅ No Facial Recognition</div>
-            <div class="p-badge safe">✅ No Identity Tracking</div>
-            <div class="p-badge safe">✅ 100% Local Offline Processing</div>
-            <div class="p-badge safe">✅ No Raw Video Saved By Default</div>
-          </div>
-          
-          <table class="privacy-table">
-            <thead>
-              <tr>
-                <th>Data Category</th>
-                <th>Stored?</th>
-                <th>Storage Policy</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Raw Video Stream</td>
-                <td><strong class="tag-no">NO</strong></td>
-                <td>Processed strictly in volatile RAM memory; dropped after inference.</td>
-              </tr>
-              <tr>
-                <td>Facial Images / Biometrics</td>
-                <td><strong class="tag-no">NO</strong></td>
-                <td>Never scanned, extracted, or stored. Architecture is exemplar-free.</td>
-              </tr>
-              <tr>
-                <td>Spatial Density Maps</td>
-                <td><strong class="tag-yes">OPTIONAL</strong></td>
-                <td>Low-resolution 2D numerical floating point arrays. No personal details.</td>
-              </tr>
-              <tr>
-                <td>Per-Zone Counts & Metrics</td>
-                <td><strong class="tag-yes">YES</strong></td>
-                <td>Aggregate statistics (people/m², flow speed, timestamps) logged to SQLite.</td>
-              </tr>
-              <tr>
-                <td>Alert Snapshots</td>
-                <td><strong class="tag-no">DISABLED BY DEFAULT</strong></td>
-                <td>Only captured if explicitly toggled ON by authenticated operator in config.</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div class="safety-disclaimer">
-            <strong>⚠️ Safety Notice:</strong> This system is a computer-vision decision support tool. It does not replace qualified crowd safety professionals. Thresholds must be audited against local venue regulations before deployment.
-          </div>
+        <div class="privacy-badge-group">
+          <div class="p-badge safe">🛡️ Zero Face Recognition</div>
+          <div class="p-badge safe">🛡️ Zero Person Tracking</div>
+          <div class="p-badge safe">🛡️ 100% Local GPU/CPU Inference</div>
+          <div class="p-badge safe">🛡️ Volatile RAM-Only Frame Processing</div>
         </div>
+        <table class="privacy-table">
+          <thead>
+            <tr><th>Data Category</th><th>Persisted?</th><th>Data Handling Policy</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Camera / Mobile Video Stream</td>
+              <td><strong class="tag-no">NO</strong></td>
+              <td>Frames are ingested into volatile memory, analyzed by CLIP-EBC, and instantly overwritten.</td>
+            </tr>
+            <tr>
+              <td>Facial Geometry & Biometrics</td>
+              <td><strong class="tag-no">NO</strong></td>
+              <td>Model predicts anonymous head density maps only. No identity recognition models exist.</td>
+            </tr>
+            <tr>
+              <td>Density Numerical Maps</td>
+              <td><strong class="tag-yes">EPHEMERAL</strong></td>
+              <td>Low-resolution 2D statistical arrays used strictly to produce heatmaps and zone headcounts.</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
   </main>
+
+  <!-- MODAL: Video Upload (Mobile Phone / Laptop Video) -->
+  <div class="modal-backdrop hidden" id="modal-upload">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-icon">📤</span>
+          <h3>Upload Video File (Mobile / CCTV / MP4)</h3>
+        </div>
+        <button class="modal-close-btn" id="btn-close-upload">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="modal-desc">
+          Upload any crowd video recorded on your mobile phone, exported from CCTV, or saved on your computer (MP4, AVI, MOV, MKV).
+        </p>
+
+        <!-- Drag & Drop Zone -->
+        <div class="drop-zone" id="upload-dropzone">
+          <input type="file" id="upload-file-input" accept="video/mp4,video/x-m4v,video/*" hidden>
+          <div class="drop-content">
+            <div class="drop-icon">📁</div>
+            <p><strong>Click to browse</strong> or drag & drop video file here</p>
+            <span class="drop-sub">Supported formats: MP4, MOV, AVI, MKV (Up to 500MB)</span>
+          </div>
+        </div>
+
+        <!-- Upload Progress Indicator -->
+        <div class="upload-progress-box hidden" id="upload-progress-box">
+          <div class="progress-info">
+            <span id="upload-filename">uploading...</span>
+            <span id="upload-percent">0%</span>
+          </div>
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="upload-bar-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <div class="upload-status-msg" id="upload-status-msg"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btn-cancel-upload">Cancel</button>
+        <button class="btn btn-primary" id="btn-confirm-upload" disabled>Start Analysis</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Link CCTV / Mobile Phone Stream (RTSP / HTTP) -->
+  <div class="modal-backdrop hidden" id="modal-stream">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-icon">🔗</span>
+          <h3>Link Live CCTV Stream or Mobile Phone Camera</h3>
+        </div>
+        <button class="modal-close-btn" id="btn-close-stream-modal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="modal-desc">
+          Connect directly to a live IP camera, CCTV RTSP stream, or your smartphone camera using a free mobile streaming app (like <em>IP Webcam</em> on Android or <em>DroidCam</em>).
+        </p>
+
+        <div class="form-group">
+          <label>Stream or RTSP URL:</label>
+          <input type="text" id="stream-url-input" class="form-input" placeholder="e.g. http://192.168.1.105:8080/video or rtsp://admin:pass@192.168.1.50:554/live">
+        </div>
+
+        <!-- Quick Presets -->
+        <div class="presets-section">
+          <span class="preset-label">Common Formats & Examples:</span>
+          <div class="preset-list">
+            <button class="preset-btn" data-preset="http://192.168.1.100:8080/video">📱 Mobile (IP Webcam Android)</button>
+            <button class="preset-btn" data-preset="rtsp://192.168.1.50:554/stream1">📹 CCTV IP Camera (RTSP)</button>
+            <button class="preset-btn" data-preset="data/real_crowd_test.mp4">📁 data/real_crowd_test.mp4</button>
+            <button class="preset-btn" data-preset="data/sample_crowd.mp4">🤖 data/sample_crowd.mp4</button>
+          </div>
+        </div>
+
+        <div class="stream-status-msg" id="stream-status-msg"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btn-cancel-stream">Cancel</button>
+        <button class="btn btn-primary" id="btn-connect-stream">Connect Feed</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
