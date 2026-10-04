@@ -113,6 +113,9 @@ class PipelineService:
         logger.info("Switching video source to: %s", new_source)
         if self.stream:
             self.stream.stop()
+        if self.scheduler:
+            self.scheduler._last_density_map = None
+            self.scheduler._last_count = 0.0
         self.source = new_source
         self.stream = VideoStream(
             source=self.source,
@@ -182,66 +185,74 @@ class PipelineService:
         }
 
     def _process_loop(self) -> None:
-        """Continuous frame processing loop."""
+        """Continuous frame processing loop with resilient error recovery."""
         while self._is_running:
             loop_start = time.perf_counter()
 
-            if not self.stream:
-                time.sleep(0.05)
-                continue
+            try:
+                if not self.stream:
+                    time.sleep(0.05)
+                    continue
 
-            is_conn, frame, frame_id = self.stream.read()
-            if not is_conn or frame is None:
-                # Render reconnecting placeholder screen
-                blank = np.zeros((360, 640, 3), dtype=np.uint8)
-                cv2.putText(
-                    blank,
-                    "CAMERA DISCONNECTED - AUTO RECONNECTING [30s TIMEOUT]...",
-                    (30, 180),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 140, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-                _, jpeg = cv2.imencode(".jpg", blank, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                is_conn, frame, frame_id = self.stream.read()
+                if not is_conn or frame is None:
+                    # Render reconnecting placeholder screen
+                    blank = np.zeros((360, 640, 3), dtype=np.uint8)
+                    cv2.putText(
+                        blank,
+                        "CONNECTING VIDEO STREAM...",
+                        (140, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 200, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    _, jpeg = cv2.imencode(".jpg", blank, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    with self._render_lock:
+                        self._latest_rendered_jpeg = jpeg.tobytes()
+                        self._latest_raw_jpeg = jpeg.tobytes()
+                        self._latest_heatmap_jpeg = jpeg.tobytes()
+                        self._latest_side_by_side_jpeg = jpeg.tobytes()
+                    time.sleep(0.1)
+                    continue
+
+                # Process frame with adaptive scheduler
+                density_map, count, is_new, latency = self.scheduler.process_frame(frame, frame_id)
+                self.total_count = count
+                self.latency_ms = latency
+
+                # Render 1: Clean Raw Frame with subtle camera HUD
+                raw_rendered = self._render_raw_view(frame)
+                _, raw_jpeg = cv2.imencode(".jpg", raw_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+                # Render 2: Heatmap Overlay with telemetry HUD
+                heatmap_rendered = self._render_overlay(frame, density_map, count, latency)
+                _, heatmap_jpeg = cv2.imencode(".jpg", heatmap_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+                # Render 3: Synchronized Side-by-Side Composite
+                sbs_rendered = self._render_side_by_side(raw_rendered, heatmap_rendered)
+                _, sbs_jpeg = cv2.imencode(".jpg", sbs_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
                 with self._render_lock:
-                    self._latest_rendered_jpeg = jpeg.tobytes()
-                time.sleep(0.1)
-                continue
+                    self._latest_raw_jpeg = raw_jpeg.tobytes()
+                    self._latest_heatmap_jpeg = heatmap_jpeg.tobytes()
+                    self._latest_side_by_side_jpeg = sbs_jpeg.tobytes()
+                    self._latest_rendered_jpeg = heatmap_jpeg.tobytes()
 
-            # Process frame with adaptive scheduler
-            density_map, count, is_new, latency = self.scheduler.process_frame(frame, frame_id)
-            self.total_count = count
-            self.latency_ms = latency
+                # Measure processed FPS
+                now = time.perf_counter()
+                dt = now - self._last_processed_time
+                self._last_processed_time = now
+                if dt > 0:
+                    self._fps_history.append(1.0 / dt)
+                    if len(self._fps_history) > 15:
+                        self._fps_history.pop(0)
+                    self.processed_fps = float(np.mean(self._fps_history))
 
-            # Render 1: Clean Raw Frame with subtle camera HUD
-            raw_rendered = self._render_raw_view(frame)
-            _, raw_jpeg = cv2.imencode(".jpg", raw_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
-
-            # Render 2: Heatmap Overlay with telemetry HUD
-            heatmap_rendered = self._render_overlay(frame, density_map, count, latency)
-            _, heatmap_jpeg = cv2.imencode(".jpg", heatmap_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
-
-            # Render 3: Synchronized Side-by-Side Composite
-            sbs_rendered = self._render_side_by_side(raw_rendered, heatmap_rendered)
-            _, sbs_jpeg = cv2.imencode(".jpg", sbs_rendered, [cv2.IMWRITE_JPEG_QUALITY, 80])
-
-            with self._render_lock:
-                self._latest_raw_jpeg = raw_jpeg.tobytes()
-                self._latest_heatmap_jpeg = heatmap_jpeg.tobytes()
-                self._latest_side_by_side_jpeg = sbs_jpeg.tobytes()
-                self._latest_rendered_jpeg = heatmap_jpeg.tobytes()
-
-            # Measure processed FPS
-            now = time.perf_counter()
-            dt = now - self._last_processed_time
-            self._last_processed_time = now
-            if dt > 0:
-                self._fps_history.append(1.0 / dt)
-                if len(self._fps_history) > 15:
-                    self._fps_history.pop(0)
-                self.processed_fps = float(np.mean(self._fps_history))
+            except Exception as e:
+                logger.exception("Error in processing loop: %s", e)
+                time.sleep(0.05)
 
             # Maintain max 15 FPS processing rate to keep CPU balanced
             elapsed = time.perf_counter() - loop_start
@@ -258,7 +269,7 @@ class PipelineService:
         src_name = Path(str(self.source)).name if isinstance(self.source, (Path, str)) else f"Cam #{self.source}"
         cv2.putText(
             out,
-            f"ORIGINAL FOOTAGE (CCTV / MOBILE) | Source: {src_name}",
+            f"ORIGINAL FOOTAGE (CCTV / MOBILE) | {src_name}",
             (12, 24),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -285,13 +296,20 @@ class PipelineService:
     ) -> np.ndarray:
         """Renders density heatmap overlay with HUD indicators."""
         out = frame.copy()
+        h, w = out.shape[:2]
+
         if density_map is not None:
+            # Ensure density map matches output frame dimensions
+            dh, dw = density_map.shape[:2]
+            if (dh, dw) != (h, w):
+                density_map = cv2.resize(density_map, (w, h), interpolation=cv2.INTER_LINEAR)
             norm = cv2.normalize(density_map, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
             heatmap = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
+            if heatmap.shape[:2] != (h, w):
+                heatmap = cv2.resize(heatmap, (w, h))
             out = cv2.addWeighted(out, 0.60, heatmap, 0.40, 0)
 
         # Draw Control-Room HUD Header
-        h, w = out.shape[:2]
         cv2.rectangle(out, (0, 0), (w, 36), (15, 23, 42), -1)
 
         hud_text = (
@@ -309,33 +327,19 @@ class PipelineService:
             cv2.LINE_AA,
         )
 
-        # Draw "SIMULATED" badge if synthetic file
-        if "sample_crowd" in str(self.source):
-            cv2.putText(
-                out,
-                "[SIMULATED]",
-                (w - 120, 24),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 200, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
         return out
 
     def _render_side_by_side(self, raw_frame: np.ndarray, heatmap_frame: np.ndarray) -> np.ndarray:
         """Horizontally stacks raw footage and AI heatmap with a divider."""
-        # Normalize height if dimensions differ
         h1, w1 = raw_frame.shape[:2]
         h2, w2 = heatmap_frame.shape[:2]
-        target_h = min(h1, h2, 480)
+        target_h = 360
         
-        scale1 = target_h / h1
-        scale2 = target_h / h2
+        w1_scaled = max(1, int(w1 * (target_h / h1)))
+        w2_scaled = max(1, int(w2 * (target_h / h2)))
         
-        f1 = cv2.resize(raw_frame, (int(w1 * scale1), target_h))
-        f2 = cv2.resize(heatmap_frame, (int(w2 * scale2), target_h))
+        f1 = cv2.resize(raw_frame, (w1_scaled, target_h), interpolation=cv2.INTER_LINEAR)
+        f2 = cv2.resize(heatmap_frame, (w2_scaled, target_h), interpolation=cv2.INTER_LINEAR)
         
         # Center divider border
         divider = np.full((target_h, 6, 3), 40, dtype=np.uint8)

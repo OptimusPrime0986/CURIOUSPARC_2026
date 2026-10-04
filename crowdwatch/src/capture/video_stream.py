@@ -183,11 +183,22 @@ class VideoStream:
                 if is_file and self.loop_file:
                     self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     ret, frame = self._cap.read()
+                    if not ret or frame is None:
+                        # Re-open capture to ensure loop on all codecs
+                        self._connect()
+                        if self._cap:
+                            ret, frame = self._cap.read()
 
                 if not ret or frame is None:
                     self._handle_disconnect()
                     time.sleep(self.reconnect_interval_sec)
                     continue
+
+            # Normalize high-resolution mobile videos (e.g., 1080p / 4K) to max 640px for real-time inference
+            h, w = frame.shape[:2]
+            if max(h, w) > 640:
+                scale = 640.0 / max(h, w)
+                frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
             # Update latest frame & calculate FPS
             now = time.time()

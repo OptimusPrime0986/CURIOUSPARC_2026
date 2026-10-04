@@ -170,13 +170,23 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  // Refresh feeds helper (bust cache, clear previous frame, and reconnect cleanly)
+  function refreshStreamViews() {
+    const timestamp = Date.now();
+    streamRawImg.src = "";
+    streamHeatmapImg.src = "";
+    streamCompositeImg.src = "";
+    setTimeout(() => {
+      streamRawImg.src = `/api/stream/raw?t=${timestamp}`;
+      streamHeatmapImg.src = `/api/stream/heatmap?t=${timestamp}`;
+      streamCompositeImg.src = `/api/stream/sidebyside?t=${timestamp}`;
+    }, 250);
+  }
+
   // Refresh feeds button (bust cache / force reconnect)
   const btnReloadStream = document.getElementById("btn-reload-stream");
   btnReloadStream.addEventListener("click", () => {
-    const timestamp = Date.now();
-    streamRawImg.src = `/api/stream/raw?t=${timestamp}`;
-    streamHeatmapImg.src = `/api/stream/heatmap?t=${timestamp}`;
-    streamCompositeImg.src = `/api/stream/sidebyside?t=${timestamp}`;
+    refreshStreamViews();
     appendAuditLog("Stream feeds refreshed.");
   });
 
@@ -239,11 +249,7 @@ document.addEventListener("DOMContentLoaded", () => {
         currentSourceDisplay.textContent = displayName || sourceValue;
         currentSourceType.textContent = sourceType.toUpperCase();
         appendAuditLog(`Feed active: ${displayName || sourceValue}`, "success");
-        // Force refresh image elements to restart playback seamlessly
-        const timestamp = Date.now();
-        streamRawImg.src = `/api/stream/raw?t=${timestamp}`;
-        streamHeatmapImg.src = `/api/stream/heatmap?t=${timestamp}`;
-        streamCompositeImg.src = `/api/stream/sidebyside?t=${timestamp}`;
+        refreshStreamViews();
       }
     } catch (e) {
       appendAuditLog(`Failed to switch video source: ${e}`, "error");
@@ -356,10 +362,7 @@ document.addEventListener("DOMContentLoaded", () => {
         currentSourceType.textContent = "USER UPLOAD";
 
         // Refresh streams
-        const timestamp = Date.now();
-        streamRawImg.src = `/api/stream/raw?t=${timestamp}`;
-        streamHeatmapImg.src = `/api/stream/heatmap?t=${timestamp}`;
-        streamCompositeImg.src = `/api/stream/sidebyside?t=${timestamp}`;
+        refreshStreamViews();
 
         // Reload video chips
         loadAvailableVideos();
