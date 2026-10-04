@@ -1,0 +1,20 @@
+{
+  "calibration_name": "Default Hall Ground Plane",
+  "units": "meters",
+  "real_width_m": 6.0,
+  "real_height_m": 10.0,
+  "image_points": [
+    [120, 280],
+    [520, 280],
+    [600, 350],
+    [40, 350]
+  ],
+  "world_points": [
+    [0.0, 0.0],
+    [6.0, 0.0],
+    [6.0, 10.0],
+    [0.0, 10.0]
+  ],
+  "confidence_score": 0.88,
+  "notes": "4-point perspective ground plane calibration for converting pixel areas into real m^2"
+}

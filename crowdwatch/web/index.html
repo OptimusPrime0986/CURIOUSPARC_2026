@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CrowdWatch - Crowd Density & Stampede Early-Warning System</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo-badge">🛡️ CW</div>
+      <div class="title-group">
+        <h1>CrowdWatch</h1>
+        <span class="sub-title">Crowd Density & Stampede Early-Warning System [DECISION SUPPORT]</span>
+      </div>
+    </div>
+    
+    <div class="system-status-bar">
+      <div class="status-item">
+        <span class="dot online" id="conn-dot"></span>
+        <span class="label">Status:</span>
+        <strong id="conn-status">ONLINE</strong>
+      </div>
+      <div class="status-item">
+        <span class="label">FPS:</span>
+        <strong id="telemetry-fps">--</strong>
+      </div>
+      <div class="status-item">
+        <span class="label">Latency:</span>
+        <strong id="telemetry-latency">-- ms</strong>
+      </div>
+      <div class="status-item">
+        <span class="label">Frame Skip:</span>
+        <strong id="telemetry-skip">N=2</strong>
+      </div>
+      <div class="status-item">
+        <span class="label">Est. Count:</span>
+        <strong class="count-badge" id="telemetry-count">--</strong>
+      </div>
+    </div>
+
+    <nav class="nav-tabs">
+      <button class="tab-btn active" data-tab="live">🔴 Live Control</button>
+      <button class="tab-btn" data-tab="setup">⚙️ Setup Wizard</button>
+      <button class="tab-btn" data-tab="replay">📊 Replay & Eval</button>
+      <button class="tab-btn" data-tab="privacy">🔒 Privacy Policy</button>
+    </nav>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-content">
+    
+    <!-- Tab 1: Live Control View -->
+    <section class="tab-pane active" id="pane-live">
+      <div class="control-grid">
+        
+        <!-- Left: Video Feed & Heatmap -->
+        <div class="video-container panel-card">
+          <div class="panel-header">
+            <h2>Live Feed & Spatial Heatmap</h2>
+            <div class="feed-controls">
+              <span class="simulated-badge" id="feed-badge">[SIMULATED]</span>
+              <button class="btn btn-sm" id="btn-toggle-heatmap">Toggle Overlay</button>
+            </div>
+          </div>
+          
+          <div class="video-canvas-wrapper" id="video-wrapper">
+            <img id="live-stream-img" src="/api/stream/live" alt="Live Camera Feed Stream" />
+            <canvas id="overlay-canvas"></canvas>
+          </div>
+
+          <!-- Heatmap Legend -->
+          <div class="heatmap-legend">
+            <span class="legend-label">Density (people/m²):</span>
+            <div class="gradient-bar"></div>
+            <div class="legend-markers">
+              <span>0 (Clear)</span>
+              <span>2.0 (Normal)</span>
+              <span>3.5 (Watch)</span>
+              <span>5.0+ (Critical)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Zones & Alert Feed -->
+        <div class="telemetry-sidebar">
+          
+          <!-- State Alert Banner -->
+          <div class="alert-banner normal" id="master-state-banner">
+            <div class="banner-icon" id="banner-icon">✅</div>
+            <div class="banner-info">
+              <div class="state-title" id="banner-state-text">SYSTEM NORMAL</div>
+              <div class="state-action" id="banner-action-text">No immediate crowd risk. Maintain standard observation.</div>
+            </div>
+          </div>
+
+          <!-- Zone Telemetry Cards -->
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>Monitored Zones (FR-06, FR-11)</h2>
+            </div>
+            
+            <div class="zone-cards" id="zone-cards-list">
+              <!-- Zone A -->
+              <div class="zone-card" id="card-zone-1">
+                <div class="zone-top">
+                  <span class="zone-name">Zone A - Main Concourse</span>
+                  <span class="badge badge-normal" id="badge-zone-1">NORMAL</span>
+                </div>
+                <div class="zone-metrics">
+                  <div class="metric">
+                    <span class="m-label">Density</span>
+                    <strong class="m-value" id="density-zone-1">1.2 <small>ppl/m²</small></strong>
+                  </div>
+                  <div class="metric">
+                    <span class="m-label">Trend</span>
+                    <strong class="m-value trend-flat" id="trend-zone-1">➔ Flat</strong>
+                  </div>
+                  <div class="metric">
+                    <span class="m-label">Flow Speed</span>
+                    <strong class="m-value" id="speed-zone-1">0.8 m/s</strong>
+                  </div>
+                  <div class="metric">
+                    <span class="m-label">Time to Critical</span>
+                    <strong class="m-value" id="ttc-zone-1">Stable</strong>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Zone B -->
+              <div class="zone-card" id="card-zone-2">
+                <div class="zone-top">
+                  <span class="zone-name">Zone B - West Transit Corridor</span>
+                  <span class="badge badge-watch" id="badge-zone-2">WATCH</span>
+                </div>
+                <div class="zone-metrics">
+                  <div class="metric">
+                    <span class="m-label">Density</span>
+                    <strong class="m-value" id="density-zone-2">2.4 <small>ppl/m²</small></strong>
+                  </div>
+                  <div class="metric">
+                    <span class="m-label">Trend</span>
+                    <strong class="m-value trend-up" id="trend-zone-2">⬆ Rising</strong>
+                  </div>
+                  <div class="metric">
+                    <span class="m-label">Flow Speed</span>
+                    <strong class="m-value" id="speed-zone-2">0.5 m/s</strong>
+                  </div>
+                  <div class="metric">
+                    <span class="m-label">Time to Critical</span>
+                    <strong class="m-value highlight-warn" id="ttc-zone-2">8.5 min</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Chokepoints Panel -->
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>Choke Points & In/Out Balance (FR-09)</h2>
+            </div>
+            <div class="chokepoint-item" id="cp-item-1">
+              <div class="cp-title">
+                <strong>Gate 1 - Primary Entry</strong>
+                <span class="badge badge-normal" id="cp-badge-1">BALANCED</span>
+              </div>
+              <div class="cp-bar-container">
+                <div class="cp-bar inflow" style="width: 45%;"></div>
+                <div class="cp-bar outflow" style="width: 50%;"></div>
+              </div>
+              <div class="cp-stats">
+                <span>Inflow: <strong>1.4 ppl/s</strong></span>
+                <span>Outflow Cap: <strong>2.5 ppl/s</strong></span>
+                <span>Ratio: <strong>56%</strong></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Live Alert Feed -->
+          <div class="panel-card flex-grow">
+            <div class="panel-header">
+              <h2>Recent Alert Feed (FR-12, FR-14)</h2>
+              <button class="btn btn-sm btn-outline" id="btn-clear-alerts">Clear View</button>
+            </div>
+            <div class="alert-feed-list" id="alert-feed-list">
+              <div class="alert-feed-item info">
+                <div class="af-time">System Startup</div>
+                <div class="af-text">Pipeline active on CPU (Adaptive frame-skip scheduler enabled: >=5 FPS).</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: Setup Screen (FR-03, FR-06) -->
+    <section class="tab-pane" id="pane-setup">
+      <div class="setup-grid">
+        <div class="setup-canvas-panel panel-card">
+          <div class="panel-header">
+            <h2>Interactive Setup Wizard (< 10 min setup)</h2>
+            <div class="setup-toolbar">
+              <button class="btn btn-sm" id="btn-mode-calib">1. 4-Point Ground Calibration</button>
+              <button class="btn btn-sm" id="btn-mode-zone">2. Draw Zones</button>
+              <button class="btn btn-sm" id="btn-mode-choke">3. Draw Choke Points</button>
+              <button class="btn btn-sm btn-danger" id="btn-reset-drawing">Reset Points</button>
+            </div>
+          </div>
+          <div class="setup-canvas-wrapper">
+            <canvas id="setup-canvas" width="640" height="360"></canvas>
+          </div>
+          <p class="setup-hint" id="setup-instruction">
+            Click 4 points on the floor to define ground plane coordinates with known real-world distances.
+          </p>
+        </div>
+
+        <div class="setup-sidebar panel-card">
+          <div class="panel-header">
+            <h2>Calibration & Threshold Settings</h2>
+          </div>
+          <form id="setup-form" onsubmit="return false;">
+            <div class="form-group">
+              <label>Ground Width (meters):</label>
+              <input type="number" id="calib-width-m" value="6.0" step="0.1">
+            </div>
+            <div class="form-group">
+              <label>Ground Length (meters):</label>
+              <input type="number" id="calib-height-m" value="10.0" step="0.1">
+            </div>
+            
+            <hr class="divider">
+            <h3>Threshold Configuration (Qualified Safety Review Required)</h3>
+            
+            <div class="form-group">
+              <label>Watch Threshold (ppl/m²):</label>
+              <input type="number" id="thresh-watch" value="2.0" step="0.1">
+            </div>
+            <div class="form-group">
+              <label>Warning Threshold (ppl/m²):</label>
+              <input type="number" id="thresh-warning" value="3.5" step="0.1">
+            </div>
+            <div class="form-group">
+              <label>Critical Threshold (ppl/m²):</label>
+              <input type="number" id="thresh-critical" value="5.0" step="0.1">
+            </div>
+            <div class="form-group">
+              <label>Dwell Time / Hysteresis (seconds):</label>
+              <input type="number" id="thresh-dwell" value="3.0" step="0.5">
+            </div>
+            <div class="form-group">
+              <label>Alert Cooldown (seconds):</label>
+              <input type="number" id="thresh-cooldown" value="45.0" step="1.0">
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary" id="btn-save-setup">Save to Config Files</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: Replay & Evaluation Page (FR-17, NFR-03/04) -->
+    <section class="tab-pane" id="pane-replay">
+      <div class="replay-grid">
+        <div class="panel-card">
+          <div class="panel-header">
+            <h2>Replay Mode & Historical Video Evaluation</h2>
+          </div>
+          <div class="form-group inline">
+            <label>Select Video File:</label>
+            <input type="text" id="replay-filepath" value="data/sample_crowd.mp4" class="input-wide">
+            <button class="btn btn-primary" id="btn-load-replay">Load & Run Pipeline</button>
+          </div>
+
+          <div class="metrics-summary-grid">
+            <div class="metric-box">
+              <span class="metric-title">CLIP-EBC Count MAE</span>
+              <strong class="metric-val" id="metric-mae">1.82</strong>
+              <span class="metric-sub">Published baseline: 61.2 (NWPU)</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-title">Density Error</span>
+              <strong class="metric-val" id="metric-density-err">0.24 ppl/m²</strong>
+              <span class="metric-sub">vs. measured floor ground-truth</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-title">Alert Lead Time</span>
+              <strong class="metric-val highlight-warn" id="metric-lead-time">4.8 min</strong>
+              <span class="metric-sub">Time before critical threshold</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-title">False Alarms / Hour</span>
+              <strong class="metric-val" id="metric-false-alarms">0.0 / hr</strong>
+              <span class="metric-sub">Across steady-state sequences</span>
+            </div>
+          </div>
+
+          <div class="export-actions">
+            <button class="btn btn-outline" id="btn-export-csv">📥 Export Alert History (CSV)</button>
+            <button class="btn btn-outline" id="btn-run-synthetic-eval">⚡ Run Simulated Sequence Benchmark</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 4: Privacy Policy (FR-16, NFR-05) -->
+    <section class="tab-pane" id="pane-privacy">
+      <div class="privacy-card panel-card">
+        <div class="panel-header">
+          <h2>Privacy by Design Specification (FR-16, NFR-05)</h2>
+        </div>
+        <div class="privacy-content">
+          <div class="privacy-badge-group">
+            <div class="p-badge safe">✅ No Facial Recognition</div>
+            <div class="p-badge safe">✅ No Identity Tracking</div>
+            <div class="p-badge safe">✅ 100% Local Offline Processing</div>
+            <div class="p-badge safe">✅ No Raw Video Saved By Default</div>
+          </div>
+          
+          <table class="privacy-table">
+            <thead>
+              <tr>
+                <th>Data Category</th>
+                <th>Stored?</th>
+                <th>Storage Policy</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Raw Video Stream</td>
+                <td><strong class="tag-no">NO</strong></td>
+                <td>Processed strictly in volatile RAM memory; dropped after inference.</td>
+              </tr>
+              <tr>
+                <td>Facial Images / Biometrics</td>
+                <td><strong class="tag-no">NO</strong></td>
+                <td>Never scanned, extracted, or stored. Architecture is exemplar-free.</td>
+              </tr>
+              <tr>
+                <td>Spatial Density Maps</td>
+                <td><strong class="tag-yes">OPTIONAL</strong></td>
+                <td>Low-resolution 2D numerical floating point arrays. No personal details.</td>
+              </tr>
+              <tr>
+                <td>Per-Zone Counts & Metrics</td>
+                <td><strong class="tag-yes">YES</strong></td>
+                <td>Aggregate statistics (people/m², flow speed, timestamps) logged to SQLite.</td>
+              </tr>
+              <tr>
+                <td>Alert Snapshots</td>
+                <td><strong class="tag-no">DISABLED BY DEFAULT</strong></td>
+                <td>Only captured if explicitly toggled ON by authenticated operator in config.</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="safety-disclaimer">
+            <strong>⚠️ Safety Notice:</strong> This system is a computer-vision decision support tool. It does not replace qualified crowd safety professionals. Thresholds must be audited against local venue regulations before deployment.
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

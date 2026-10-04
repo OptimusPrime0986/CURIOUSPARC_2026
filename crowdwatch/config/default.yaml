@@ -1,0 +1,97 @@
+# CrowdWatch System Configuration (SRS v1.0 Compliant)
+# NOTE: This system is a decision-support aid. It does not replace trained
+# crowd-management staff. All threshold values MUST be reviewed and validated
+# by a qualified crowd-safety professional before any real deployment.
+
+system:
+  app_name: "CrowdWatch - Crowd Density & Early-Warning System"
+  version: "1.0.0"
+  device: "cpu"  # "cpu" or "cuda"
+  debug: false
+
+input:
+  source_type: "file"  # "file", "webcam", "rtsp"
+  source_path: "data/sample_crowd.mp4"
+  camera_index: 0
+  rtsp_url: ""
+  reconnect_timeout_sec: 30
+  reconnect_interval_sec: 2.0
+  target_fps: 10
+  frame_width: 640
+  frame_height: 360
+
+counting:
+  model_type: "clip_ebc"
+  weights_path: ""
+  clip_model_name: "openai/clip-vit-base-patch16"
+  frame_skip: 2  # Run counter every N frames (NFR-02 throughput optimization)
+  auto_adapt_frame_skip: true
+  min_frame_skip: 1
+  max_frame_skip: 6
+  input_resolution: [224, 224]
+
+depth:
+  enabled: true
+  model_id: "depth-anything/Depth-Anything-V2-Small-hf"
+  license: "Apache-2.0"
+  run_interval_frames: 10  # Secondary scale correction & confidence
+  confidence_depth_weight: 0.35
+
+calibration:
+  homography_file: "config/calibration.json"
+  min_confidence: 0.65
+  primary_source: "homography"
+  secondary_source: "depth_anything_v2_small"
+
+flow:
+  enabled: true
+  farneback_pyr_scale: 0.5
+  farneback_levels: 3
+  farneback_winsize: 15
+  farneback_iterations: 3
+  farneback_poly_n: 5
+  farneback_poly_sigma: 1.2
+  turbulence_opposing_angle_deg: 120.0
+  turbulence_speed_threshold: 1.5
+  stop_and_go_variance_threshold: 0.8
+
+chokepoints:
+  line_crossing_buffer_px: 12
+  capacity_warning_ratio: 1.2  # Flag when inflow > 120% outflow capacity
+
+forecast:
+  rolling_window_seconds: 30
+  smoothing_alpha: 0.3
+  critical_density_threshold: 5.0  # people/m^2
+  min_points_for_forecast: 5
+  time_to_critical_warning_sec: 600   # 10 minutes
+  time_to_critical_critical_sec: 180  # 3 minutes
+
+alerts:
+  state_thresholds:
+    normal_max_density: 2.0
+    watch_max_density: 3.5
+    warning_max_density: 5.0
+    critical_min_density: 5.0
+  dwell_time_seconds: 3.0  # Hysteresis: minimum time in state before changing
+  cooldown_seconds: 45.0   # Per-zone alert cooldown to prevent spam
+  channels:
+    dashboard: true
+    telegram: false
+    email: false
+  recommended_actions:
+    normal: "No immediate crowd risk. Maintain standard observation."
+    watch: "Crowd density or trend rising. Monitor zone closely and ready personnel."
+    warning: "High crowd density or turbulent flow detected. Prepare entry restrictions; notify floor marshals."
+    critical: "CRITICAL DENSITY IMMINENT OR EXCEEDED. Halt inflow immediately, open alternate exit routes, dispatch rapid response."
+
+storage:
+  database_path: "data/crowdwatch.db"
+  save_snapshots: false  # FR-16: Privacy by default. Only enabled explicitly by operator.
+  retention_days: 7
+  export_dir: "data/exports"
+
+privacy:
+  no_facial_recognition: true
+  no_cross_session_identity_tracking: true
+  store_raw_video: false

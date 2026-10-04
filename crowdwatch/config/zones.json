@@ -1,0 +1,45 @@
+{
+  "zones": [
+    {
+      "id": "zone_1",
+      "name": "Zone A - Main Concourse",
+      "polygon": [
+        [100, 150],
+        [540, 150],
+        [580, 340],
+        [60, 340]
+      ],
+      "color": "#3B82F6",
+      "critical_density": 5.0,
+      "warning_density": 3.5,
+      "watch_density": 2.0
+    },
+    {
+      "id": "zone_2",
+      "name": "Zone B - West Transit Corridor",
+      "polygon": [
+        [150, 80],
+        [490, 80],
+        [520, 160],
+        [120, 160]
+      ],
+      "color": "#10B981",
+      "critical_density": 4.5,
+      "warning_density": 3.0,
+      "watch_density": 1.8
+    }
+  ],
+  "chokepoints": [
+    {
+      "id": "cp_1",
+      "name": "Gate 1 - Primary Entry / Chokepoint",
+      "line": [
+        [180, 240],
+        [460, 240]
+      ],
+      "normal_vector": [0, -1],
+      "inflow_direction": "down",
+      "max_safe_outflow_rate": 2.5
+    }
+  ]
+}
