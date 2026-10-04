@@ -294,20 +294,35 @@ class PipelineService:
     def _render_overlay(
         self, frame: np.ndarray, density_map: np.ndarray, count: float, latency: float
     ) -> np.ndarray:
-        """Renders density heatmap overlay with HUD indicators."""
+        """Renders localized density heatmap overlay with dynamic alpha transparency.
+        Empty floor / zero-density background remains 100% transparent and unaltered.
+        Only areas with detected people show localized heatmap coloration."""
         out = frame.copy()
         h, w = out.shape[:2]
 
-        if density_map is not None:
-            # Ensure density map matches output frame dimensions
+        if density_map is not None and density_map.max() > 1e-6:
             dh, dw = density_map.shape[:2]
             if (dh, dw) != (h, w):
                 density_map = cv2.resize(density_map, (w, h), interpolation=cv2.INTER_LINEAR)
-            norm = cv2.normalize(density_map, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-            heatmap = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
+
+            # Calibrate density normalization relative to peak density
+            max_d = max(float(density_map.max()), 1e-5)
+            norm_f = np.clip(density_map / max_d, 0.0, 1.0)
+            norm_u8 = (norm_f * 255.0).astype(np.uint8)
+
+            # Apply colormap (JET)
+            heatmap = cv2.applyColorMap(norm_u8, cv2.COLORMAP_JET)
             if heatmap.shape[:2] != (h, w):
                 heatmap = cv2.resize(heatmap, (w, h))
-            out = cv2.addWeighted(out, 0.60, heatmap, 0.40, 0)
+
+            # Dynamic alpha mask: 0 where no people, up to 0.72 where people are present
+            alpha = np.clip((norm_f ** 1.2) * 0.72, 0.0, 0.72)
+            # Strictly zero out background noise (< 10% peak)
+            alpha[norm_u8 < 26] = 0.0
+
+            # Alpha blend only on areas with people
+            alpha_3d = np.repeat(alpha[:, :, np.newaxis], 3, axis=2)
+            out = (out.astype(np.float32) * (1.0 - alpha_3d) + heatmap.astype(np.float32) * alpha_3d).astype(np.uint8)
 
         # Draw Control-Room HUD Header
         cv2.rectangle(out, (0, 0), (w, 36), (15, 23, 42), -1)
