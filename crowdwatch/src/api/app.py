@@ -5,8 +5,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
+import cv2
 import re
 import shutil
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
@@ -83,6 +84,92 @@ async def get_configuration() -> Dict[str, Any]:
         "calibration": cfg.calibration_data,
     }
 
+
+# ---------------------------------------------------------------------------
+# Calibration API (Phase 1)
+# ---------------------------------------------------------------------------
+
+class CalibrationRequest(BaseModel):
+    """Operator submits 4 ground-plane points + real-world dimensions."""
+    image_points: List[List[float]]
+    real_width_m: float
+    real_height_m: float
+    name: str = "Operator Calibration"
+
+
+@app.post("/api/calibration/points")
+async def calibrate_ground_plane(req: CalibrationRequest) -> Dict[str, Any]:
+    """Run 4-point ground-plane calibration and return results."""
+    pipeline = get_pipeline()
+    if pipeline.calibration_mgr is None:
+        raise HTTPException(status_code=500, detail="Calibration manager not initialised")
+    try:
+        # Grab current frame as reference for drift detection
+        ref_frame = None
+        if pipeline.stream and pipeline.stream.is_connected:
+            _, ref_frame, _ = pipeline.stream.read()
+        result = pipeline.calibration_mgr.calibrate(
+            image_points=req.image_points,
+            real_width_m=req.real_width_m,
+            real_height_m=req.real_height_m,
+            reference_frame=ref_frame,
+            name=req.name,
+        )
+        return {"status": "ok", **result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/calibration/save")
+async def save_calibration() -> Dict[str, str]:
+    """Persist the current calibration to disk."""
+    pipeline = get_pipeline()
+    if pipeline.calibration_mgr is None or not pipeline.calibration_mgr.is_calibrated:
+        raise HTTPException(status_code=400, detail="No calibration to save")
+    path = pipeline.calibration_mgr.save()
+    return {"status": "ok", "path": str(path)}
+
+
+@app.get("/api/calibration/status")
+async def get_calibration_status() -> Dict[str, Any]:
+    """Return current calibration status for the dashboard."""
+    pipeline = get_pipeline()
+    if pipeline.calibration_mgr is None:
+        return {"calibrated": False, "message": "Calibration module not loaded"}
+    return pipeline.calibration_mgr.get_status()
+
+
+@app.get("/api/calibration/frame")
+async def get_calibration_frame():
+    """Freeze and return the current video frame as JPEG for calibration marking."""
+    pipeline = get_pipeline()
+    if not pipeline.stream or not pipeline.stream.is_connected:
+        raise HTTPException(status_code=503, detail="No video stream connected")
+    _, frame, _ = pipeline.stream.read()
+    if frame is None:
+        raise HTTPException(status_code=503, detail="No frame available")
+    _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return StreamingResponse(
+        iter([jpeg.tobytes()]),
+        media_type="image/jpeg",
+    )
+
+
+@app.get("/api/calibration/grid")
+async def get_calibration_grid() -> Dict[str, Any]:
+    """Return the 1 m × 1 m preview grid lines projected into image space."""
+    pipeline = get_pipeline()
+    if pipeline.calibration_mgr is None or not pipeline.calibration_mgr.is_calibrated:
+        return {"lines": [], "calibrated": False}
+    return {
+        "lines": pipeline.calibration_mgr.preview_grid(grid_spacing_m=1.0),
+        "calibrated": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Video Source API
+# ---------------------------------------------------------------------------
 
 class SourceRequest(BaseModel):
     source_type: str  # "file", "webcam", "rtsp", "url", "preset"

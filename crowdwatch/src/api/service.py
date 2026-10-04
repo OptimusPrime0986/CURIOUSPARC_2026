@@ -1,16 +1,18 @@
-"""Core processing pipeline service integrating Capture, Counting, and Telemetry."""
+"""Core processing pipeline service integrating Capture, Counting, Calibration, and Telemetry."""
 
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
 
+from src.calibration.manager import CalibrationManager
 from src.capture.video_stream import VideoStream
 from src.config import get_config
 from src.counting.clip_ebc import CLIPEBCPredictor
@@ -44,21 +46,30 @@ class PipelineService:
         self.scheduler: Optional[AdaptiveCountScheduler] = None
         self.depth_estimator: Optional[DepthAnythingV2Predictor] = None
 
+        # Calibration (Phase 1)
+        project_root = Path(__file__).resolve().parent.parent.parent
+        calib_path = project_root / self.cfg.get("calibration", "homography_file", "config/calibration.json")
+        self.calibration_mgr = CalibrationManager(calibration_path=calib_path)
+
+        # Zone definitions from config
+        self.zones_data: List[Dict[str, Any]] = []
+        self._load_zones()
+
+        # Per-zone live metrics (keyed by zone id)
+        self.zone_metrics: Dict[str, Dict[str, float]] = {}
+
         # Processed FPS & latency tracking
         self.processed_fps: float = 0.0
         self.latency_ms: float = 0.0
         self.total_count: float = 0.0
-        self._fps_history = []
+        self._fps_history: List[float] = []
         self._last_processed_time = time.time()
 
         # Spatial hotspot tracking for accurate safety alignment
         self.red_hotspot_ratio: float = 0.0
         self.yellow_zone_ratio: float = 0.0
         self.blue_free_ratio: float = 1.0
-        self.zone_a_density: float = 0.4
-        self.zone_b_density: float = 0.5
         self.avg_density_m2: float = 0.0
-        self.floor_area_m2: float = 90.0
 
         # Latest rendered frames for MJPEG streams
         self._latest_rendered_jpeg: Optional[bytes] = None
@@ -72,6 +83,21 @@ class PipelineService:
         # WebSocket subscribers
         self._ws_clients: List[asyncio.Queue] = []
         self._ws_lock = threading.Lock()
+
+    def _load_zones(self) -> None:
+        """Load zone polygons from config/zones.json."""
+        try:
+            zones_raw = self.cfg.zones_data
+            self.zones_data = zones_raw.get("zones", []) if isinstance(zones_raw, dict) else []
+            for z in self.zones_data:
+                self.zone_metrics[z["id"]] = {
+                    "people": 0.0, "area_m2": 0.0, "density_m2": 0.0,
+                    "flow_speed": 0.0, "ttc": -1.0,
+                }
+            logger.info("Loaded %d zone(s) from config", len(self.zones_data))
+        except Exception as e:
+            logger.warning("Could not load zones: %s", e)
+            self.zones_data = []
 
     def start(self) -> None:
         """Initializes components and starts background processing."""
@@ -152,64 +178,147 @@ class PipelineService:
         with self._render_lock:
             return self._latest_side_by_side_jpeg or self._latest_rendered_jpeg
 
-    def get_telemetry(self) -> Dict[str, Union[float, int, str, bool]]:
+    def _compute_zone_densities(self, density_map: np.ndarray, total_count: float) -> None:
+        """Compute per-zone people/m² using calibrated polygon masks."""
+        if not self.zones_data or density_map is None:
+            return
+
+        for zone in self.zones_data:
+            zid = zone["id"]
+            polygon = zone.get("polygon", [])
+            if len(polygon) < 3:
+                continue
+
+            if self.calibration_mgr.is_calibrated:
+                people, area, ppl_m2 = self.calibration_mgr.zone_density(
+                    density_map, total_count, polygon,
+                )
+            else:
+                # Fallback: polygon mask fraction × total_count, no real area
+                h, w = density_map.shape[:2]
+                mask = np.zeros((h, w), dtype=np.uint8)
+                pts = np.array(polygon, dtype=np.int32)
+                cv2.fillPoly(mask, [pts], 255)
+                zone_sum = float(np.sum(density_map[mask > 0]))
+                total_sum = float(np.sum(density_map))
+                frac = zone_sum / max(total_sum, 1e-6)
+                people = round(frac * total_count, 2)
+                area = 0.0
+                ppl_m2 = 0.0
+
+            self.zone_metrics[zid] = {
+                **self.zone_metrics.get(zid, {}),
+                "people": people,
+                "area_m2": area,
+                "density_m2": ppl_m2,
+            }
+
+    def get_telemetry(self) -> Dict[str, Union[float, int, str, bool, list]]:
         """Returns instantaneous system telemetry and risk assessment strictly aligned with footage."""
         is_conn = self.stream.is_connected if self.stream else False
         status = "ONLINE" if is_conn else "RECONNECTING"
 
-        # Concourse density calculation (people per m²)
-        floor_area = max(self.floor_area_m2, 20.0)
-        self.avg_density_m2 = round(self.total_count / floor_area, 2)
+        # Calibrated floor area for avg density
+        if self.calibration_mgr.is_calibrated:
+            floor_area = max(self.calibration_mgr.floor_area_m2, 1.0)
+        else:
+            floor_area = 1.0  # Cannot compute real ppl/m² without calibration
+
+        calibrated = self.calibration_mgr.is_calibrated
+        if calibrated:
+            self.avg_density_m2 = round(self.total_count / floor_area, 2)
+        else:
+            self.avg_density_m2 = 0.0  # Don't show fake density
+
         red_pct = round(self.red_hotspot_ratio * 100.0, 1)
         yellow_pct = round(self.yellow_zone_ratio * 100.0, 1)
         blue_pct = round(max(0.0, 100.0 - red_pct - yellow_pct), 1)
 
-        # Real-time risk assessment strictly aligned with the footage & heatmap:
-        # Grounded in Fruin Level of Service (LOS) & NFPA 130 standard
-        if self.avg_density_m2 < 1.8 and red_pct < 8.0:
-            risk_level = "NORMAL"
-            risk_color = "#10b981"
-            risk_icon = "🛡️"
+        # Build per-zone telemetry list
+        zones_telemetry: List[Dict[str, Any]] = []
+        for zone in self.zones_data:
+            zid = zone["id"]
+            zm = self.zone_metrics.get(zid, {})
+            zones_telemetry.append({
+                "id": zid,
+                "name": zone.get("name", zid),
+                "people": zm.get("people", 0.0),
+                "area_m2": zm.get("area_m2", 0.0),
+                "density_m2": zm.get("density_m2", 0.0),
+                "flow_speed": zm.get("flow_speed", 0.0),
+                "ttc": zm.get("ttc", -1.0),
+            })
+
+        # Risk thresholds from config
+        alert_cfg = self.cfg.get("alerts", "state_thresholds", {})
+        watch_thresh = alert_cfg.get("watch_max_density", 3.5) if isinstance(alert_cfg, dict) else 3.5
+        warning_thresh = alert_cfg.get("warning_max_density", 5.0) if isinstance(alert_cfg, dict) else 5.0
+
+        # Real-time risk assessment (Fruin LOS / NFPA 130)
+        if not calibrated:
+            # Without calibration density is meaningless — use heatmap hotspot ratio only
+            if red_pct < 8.0:
+                risk_level, risk_color, risk_icon = "NORMAL", "#10b981", "🛡️"
+                risk_title = "SYSTEM NORMAL"
+                risk_text = "Density not calibrated. Heatmap hotspot ratio is low."
+                risk_advisory = "CALIBRATE FOR ACCURATE RISK"
+            elif red_pct < 20.0:
+                risk_level, risk_color, risk_icon = "WATCH", "#38bdf8", "👀"
+                risk_title = "ACTIVE OBSERVATION (uncalibrated)"
+                risk_text = "Moderate hotspot presence. Calibrate ground plane for accurate ppl/m²."
+                risk_advisory = "UNCALIBRATED OBSERVATION"
+            else:
+                risk_level, risk_color, risk_icon = "WARNING", "#f59e0b", "⚠️"
+                risk_title = "ELEVATED HOTSPOTS (uncalibrated)"
+                risk_text = "Significant hotspot density detected. Calibrate for precise risk assessment."
+                risk_advisory = "CALIBRATE FOR ACCURATE RISK"
+        elif self.avg_density_m2 < 1.8 and red_pct < 8.0:
+            risk_level, risk_color, risk_icon = "NORMAL", "#10b981", "🛡️"
             risk_title = "SYSTEM NORMAL"
             risk_text = "Safe crowd density. Standard pedestrian flow observed across all zones."
             risk_advisory = "FREE PEDESTRIAN FLOW"
         elif self.avg_density_m2 < 3.0 and red_pct < 16.0:
-            risk_level = "WATCH"
-            risk_color = "#38bdf8"
-            risk_icon = "👀"
+            risk_level, risk_color, risk_icon = "WATCH", "#38bdf8", "👀"
             risk_title = "ACTIVE OBSERVATION"
             risk_text = "Moderate crowd presence in mid zones. Traffic active but moving steadily."
             risk_advisory = "STEADY CONCOURSE FLOW"
         elif self.avg_density_m2 < 4.5 and red_pct < 28.0:
-            risk_level = "WARNING"
-            risk_color = "#f59e0b"
-            risk_icon = "⚠️"
+            risk_level, risk_color, risk_icon = "WARNING", "#f59e0b", "⚠️"
             risk_title = "CAPACITY WARNING"
             risk_text = "High density accumulation in hotspots. Prepare choke-point diversion gates."
             risk_advisory = "CONGESTION WARNING"
         else:
-            risk_level = "CRITICAL"
-            risk_color = "#ef4444"
-            risk_icon = "🚨"
+            risk_level, risk_color, risk_icon = "CRITICAL", "#ef4444", "🚨"
             risk_title = "CRITICAL STAMPEDE HAZARD"
             risk_text = "CRITICAL HAZARD: Dense crowd compaction! Initiate immediate physical flow dispersion."
             risk_advisory = "CRITICAL STAMPEDE ALERT"
 
         source_display = Path(str(self.source)).name if isinstance(self.source, (Path, str)) else f"Camera #{self.source}"
 
+        # Legacy zone_a / zone_b fields for backward compat with existing dashboard
+        zone_a_density = 0.0
+        zone_b_density = 0.0
+        if len(zones_telemetry) >= 1:
+            zone_a_density = zones_telemetry[0].get("density_m2", 0.0)
+        if len(zones_telemetry) >= 2:
+            zone_b_density = zones_telemetry[1].get("density_m2", 0.0)
+
         return {
             "status": status,
             "is_connected": is_conn,
+            "calibrated": calibrated,
             "processed_fps": round(self.processed_fps, 1),
             "camera_fps": self.stream.fps if self.stream else 0.0,
             "latency_ms": round(self.latency_ms, 1),
             "total_count": round(self.total_count, 1),
             "density_m2": self.avg_density_m2,
+            "floor_area_m2": round(floor_area, 1) if calibrated else 0.0,
             "red_hotspot_pct": red_pct,
             "yellow_zone_pct": yellow_pct,
             "blue_free_pct": blue_pct,
-            "zone_a_density": round(self.zone_a_density, 2),
-            "zone_b_density": round(self.zone_b_density, 2),
+            "zone_a_density": round(zone_a_density, 2),
+            "zone_b_density": round(zone_b_density, 2),
+            "zones": zones_telemetry,
             "frame_skip": self.scheduler.current_frame_skip if self.scheduler else 1,
             "device": self.device,
             "risk_level": risk_level,
@@ -343,25 +452,19 @@ class PipelineService:
             if (dh, dw) != (h, w):
                 density_map = cv2.resize(density_map, (w, h), interpolation=cv2.INTER_LINEAR)
 
-            # Piecewise transfer function tailored to COLORMAP_JET:
-            # - Empty floor (0.0 - 0.04) -> values 0 - 12 (Deep cool Blue)
-            # - Low density / transition (0.04 - 0.16) -> values 12 - 75 (Cyan to cool Green)
-            # - Mid zone / sparse crowd (0.16 - 0.50) -> values 75 - 180 (Green to Bright Yellow)
-            # - High-density crowd clusters (0.50 - 1.25+) -> values 180 - 255 (Orange to Fiery Red)
+            # Piecewise transfer function tailored to COLORMAP_JET
             xp = [0.0, 0.04, 0.16, 0.38, 0.65, 0.90, 1.25]
             yp = [0.0, 12.0, 75.0, 165.0, 205.0, 235.0, 255.0]
             density_u8 = np.interp(density_map, xp, yp).astype(np.uint8)
 
-            # Update spatial and zone metrics for real-time telemetry
-            mid_x = w // 2
-            self.zone_a_density = float(np.mean(density_map[:, :mid_x]) * 3.5) if density_map.size > 0 else 0.4
-            self.zone_b_density = float(np.mean(density_map[:, mid_x:]) * 3.5) if density_map.size > 0 else 0.5
+            # Update per-zone calibrated densities (replaces old left/right half hack)
+            self._compute_zone_densities(density_map, count)
 
             self.red_hotspot_ratio = float((density_u8 >= 195).mean())
             self.yellow_zone_ratio = float(((density_u8 >= 135) & (density_u8 < 195)).mean())
             self.blue_free_ratio = float((density_u8 < 45).mean())
 
-            # Apply COLORMAP_JET:
+            # Apply COLORMAP_JET
             heatmap = cv2.applyColorMap(density_u8, cv2.COLORMAP_JET)
             if heatmap.shape[:2] != (h, w):
                 heatmap = cv2.resize(heatmap, (w, h))
@@ -372,8 +475,9 @@ class PipelineService:
         # Draw Control-Room HUD Header
         cv2.rectangle(out, (0, 0), (w, 36), (15, 23, 42), -1)
 
+        calib_tag = "CALIBRATED" if self.calibration_mgr.is_calibrated else "UNCALIBRATED"
         hud_text = (
-            f"AI HEATMAP | Est: {count:.0f} ppl | {self.processed_fps:.1f} FPS | "
+            f"AI HEATMAP [{calib_tag}] | Est: {count:.0f} ppl | {self.processed_fps:.1f} FPS | "
             f"Lat: {latency:.0f}ms"
         )
         cv2.putText(
