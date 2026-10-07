@@ -26,6 +26,7 @@ class HomographyCalibrator:
         self._image_points: Optional[np.ndarray] = None  # (4, 2) float32
         self._world_points: Optional[np.ndarray] = None  # (4, 2) float32
         self._reference_frame_hash: Optional[str] = None
+        self._reference_frame: Optional[np.ndarray] = None
         self._reference_orb_descriptors: Optional[np.ndarray] = None
 
     # ------------------------------------------------------------------
@@ -49,6 +50,10 @@ class HomographyCalibrator:
     @property
     def world_points(self) -> Optional[np.ndarray]:
         return self._world_points.copy() if self._world_points is not None else None
+
+    @property
+    def reference_frame(self) -> Optional[np.ndarray]:
+        return self._reference_frame.copy() if self._reference_frame is not None else None
 
     # ------------------------------------------------------------------
     # Calibration
@@ -177,19 +182,59 @@ class HomographyCalibrator:
         density_map: np.ndarray,
         total_count: float,
         zone_polygon_px: List[List[float]],
-    ) -> Tuple[float, float]:
-        """Compute calibrated people/m² for a polygon zone.
+        depth_map: Optional[np.ndarray] = None,
+        return_meta: bool = False,
+    ) -> Union[Tuple[float, float], Tuple[float, float, Dict[str, Any]]]:
+        """Compute calibrated people/m² for a polygon zone with optional depth check.
+
+        Args:
+            density_map: 2D array of crowd density.
+            total_count: Total head count for scaling.
+            zone_polygon_px: Polygon vertices in pixel coordinates.
+            depth_map: Optional depth map (H, W) used for sanity check.
+            return_meta: If True, returns (people, density, metadata_dict).
 
         Returns:
-            ``(people_in_zone, density_per_m2)``
+            ``(people_in_zone, density_per_m2)`` or with metadata dict.
         """
         fraction = self.people_in_zone(density_map, zone_polygon_px)
-        people = fraction * total_count
+        people = round(fraction * total_count, 2)
         area = self.polygon_area_m2(zone_polygon_px)
 
         if area < 0.01:
-            return round(people, 2), 0.0
-        return round(people, 2), round(people / area, 2)
+            ppl_m2 = 0.0
+        else:
+            ppl_m2 = round(people / area, 2)
+
+        meta: Dict[str, Any] = {
+            "area_m2": round(area, 2),
+            "density_fraction": round(fraction, 4),
+            "depth_sanity_passed": True,
+            "depth_confidence": 1.0,
+        }
+
+        if depth_map is not None:
+            dh, dw = depth_map.shape[:2]
+            dmask = np.zeros((dh, dw), dtype=np.uint8)
+            pts = np.array(zone_polygon_px, dtype=np.int32)
+            cv2.fillPoly(dmask, [pts], 255)
+            z_depth = depth_map[dmask > 0]
+            if z_depth.size > 0:
+                mean_d = float(np.mean(z_depth))
+                std_d = float(np.std(z_depth))
+                valid = bool(np.isfinite(mean_d) and mean_d > 0.0)
+                cv_d = (std_d / mean_d) if mean_d > 1e-4 else 1.0
+                conf = float(np.clip(1.0 - cv_d * 0.4, 0.2, 1.0))
+                meta.update({
+                    "depth_sanity_passed": valid,
+                    "depth_mean": round(mean_d, 3),
+                    "depth_std": round(std_d, 3),
+                    "depth_confidence": round(conf, 3),
+                })
+
+        if return_meta:
+            return people, ppl_m2, meta
+        return people, ppl_m2
 
     # ------------------------------------------------------------------
     # Preview grid
@@ -314,6 +359,7 @@ class HomographyCalibrator:
 
     def _store_reference(self, frame: np.ndarray) -> None:
         """Store ORB descriptors + hash of the reference frame."""
+        self._reference_frame = frame.copy()
         gray = (
             cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
         )

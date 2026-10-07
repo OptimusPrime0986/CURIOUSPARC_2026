@@ -1,11 +1,16 @@
 """FastAPI Application Server for CrowdWatch Control-Room System."""
 
-from __future__ import annotations
+import os
 import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List
+
+# Default to offline mode for fast, privacy-preserving local startup
+if os.environ.get("CROWDWATCH_ONLINE") != "1":
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import cv2
 import re
@@ -143,11 +148,17 @@ async def get_calibration_status() -> Dict[str, Any]:
 async def get_calibration_frame():
     """Freeze and return the current video frame as JPEG for calibration marking."""
     pipeline = get_pipeline()
-    if not pipeline.stream or not pipeline.stream.is_connected:
-        raise HTTPException(status_code=503, detail="No video stream connected")
-    _, frame, _ = pipeline.stream.read()
+    frame = None
+    if pipeline.stream and pipeline.stream.is_connected:
+        _, frame, _ = pipeline.stream.read()
     if frame is None:
-        raise HTTPException(status_code=503, detail="No frame available")
+        raw_bytes = pipeline.get_latest_raw_jpeg()
+        if raw_bytes is not None:
+            return StreamingResponse(
+                iter([raw_bytes]),
+                media_type="image/jpeg",
+            )
+        raise HTTPException(status_code=503, detail="No video stream connected or frame available")
     _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
     return StreamingResponse(
         iter([jpeg.tobytes()]),
@@ -164,6 +175,72 @@ async def get_calibration_grid() -> Dict[str, Any]:
     return {
         "lines": pipeline.calibration_mgr.preview_grid(grid_spacing_m=1.0),
         "calibrated": True,
+    }
+
+
+@app.get("/api/calibration/drift")
+async def get_calibration_drift() -> Dict[str, Any]:
+    """Check current video feed against calibration reference frame for camera drift."""
+    pipeline = get_pipeline()
+    if pipeline.calibration_mgr is None or not pipeline.calibration_mgr.is_calibrated:
+        return {"drift_detected": False, "match_ratio": 1.0, "calibrated": False}
+
+    curr_frame = None
+    if pipeline.stream and pipeline.stream.is_connected:
+        _, curr_frame, _ = pipeline.stream.read()
+    if curr_frame is None:
+        return {
+            "drift_detected": pipeline.drift_detected,
+            "match_ratio": round(pipeline.drift_ratio, 3),
+            "calibrated": True,
+        }
+
+    drift, ratio = pipeline.calibration_mgr.check_drift(curr_frame)
+    pipeline.drift_detected = drift
+    pipeline.drift_ratio = ratio
+    return {
+        "drift_detected": drift,
+        "match_ratio": round(ratio, 4),
+        "calibrated": True,
+        "warning": (
+            "Camera has moved significantly since calibration! Please re-calibrate."
+            if drift else None
+        ),
+    }
+
+
+@app.post("/api/calibration/auto_angle")
+async def trigger_auto_angle_calibration() -> Dict[str, Any]:
+    """Auto-detect camera angle from live frame and auto-configure ground geometry."""
+    pipeline = get_pipeline()
+    if pipeline.calibration_mgr is None:
+        raise HTTPException(status_code=500, detail="Calibration manager not initialised")
+
+    curr_frame = None
+    if pipeline.stream and pipeline.stream.is_connected:
+        _, curr_frame, _ = pipeline.stream.read()
+    if curr_frame is None:
+        raw_bytes = pipeline.get_latest_raw_jpeg()
+        if raw_bytes is not None:
+            arr = np.frombuffer(raw_bytes, np.uint8)
+            curr_frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+    if curr_frame is None:
+        raise HTTPException(status_code=503, detail="No video frame available to analyze angle")
+
+    res = pipeline.calibration_mgr.auto_calibrate_from_angle(curr_frame, force=True)
+    pipeline.current_angle_result = res
+    status = pipeline.calibration_mgr.get_status()
+    return {
+        "status": "ok",
+        "angle": {
+            "view_type": res.view_type,
+            "pitch_deg": res.pitch_deg,
+            "scale_gradient": res.scale_gradient,
+            "label": res.label,
+        },
+        "calibration": status,
+        "grid_lines": pipeline.calibration_mgr.preview_grid(1.0),
     }
 
 

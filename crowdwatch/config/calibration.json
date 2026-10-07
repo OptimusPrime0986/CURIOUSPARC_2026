@@ -4,17 +4,62 @@
   "real_width_m": 6.0,
   "real_height_m": 10.0,
   "image_points": [
-    [120, 280],
-    [520, 280],
-    [600, 350],
-    [40, 350]
+    [
+      120.0,
+      280.0
+    ],
+    [
+      520.0,
+      280.0
+    ],
+    [
+      600.0,
+      350.0
+    ],
+    [
+      40.0,
+      350.0
+    ]
   ],
   "world_points": [
-    [0.0, 0.0],
-    [6.0, 0.0],
-    [6.0, 10.0],
-    [0.0, 10.0]
+    [
+      0.0,
+      0.0
+    ],
+    [
+      6.0,
+      0.0
+    ],
+    [
+      6.0,
+      10.0
+    ],
+    [
+      0.0,
+      10.0
+    ]
   ],
-  "confidence_score": 0.88,
-  "notes": "4-point perspective ground plane calibration for converting pixel areas into real m^2"
+  "homography_matrix": [
+    [
+      -0.025000000000000012,
+      -0.02857142857142856,
+      10.999999999999996
+    ],
+    [
+      2.3684757858670008e-17,
+      -0.33333333333333337,
+      93.33333333333333
+    ],
+    [
+      1.082731787824915e-18,
+      -0.009523809523809528,
+      1.0
+    ]
+  ],
+  "reference_frame_hash": null,
+  "reference_frame_file": null,
+  "timestamp": null,
+  "confidence_score": 1.0,
+  "reprojection_error_px": 0.0,
+  "notes": "4-point perspective ground plane calibration for converting pixel areas into real m\u00b2"
 }

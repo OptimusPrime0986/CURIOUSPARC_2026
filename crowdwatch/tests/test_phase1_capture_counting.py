@@ -91,6 +91,8 @@ def test_fastapi_rest_endpoints():
         data = resp.json()
         assert "status" in data
         assert "processed_fps" in data
+        assert "camera_angle" in data
+        assert "view_type" in data["camera_angle"]
 
         # Config endpoint
         resp_cfg = client.get("/api/config")

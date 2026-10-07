@@ -50,18 +50,26 @@ class PipelineService:
         project_root = Path(__file__).resolve().parent.parent.parent
         calib_path = project_root / self.cfg.get("calibration", "homography_file", "config/calibration.json")
         self.calibration_mgr = CalibrationManager(calibration_path=calib_path)
+        if calib_path.exists():
+            try:
+                self.calibration_mgr.load()
+                logger.info("Loaded active ground calibration from %s", calib_path)
+            except Exception as e:
+                logger.warning("Could not auto-load calibration from %s: %s", calib_path, e)
+
+        # Per-zone live metrics (keyed by zone id)
+        self.zone_metrics: Dict[str, Dict[str, float]] = {}
 
         # Zone definitions from config
         self.zones_data: List[Dict[str, Any]] = []
         self._load_zones()
 
-        # Per-zone live metrics (keyed by zone id)
-        self.zone_metrics: Dict[str, Dict[str, float]] = {}
-
         # Processed FPS & latency tracking
         self.processed_fps: float = 0.0
         self.latency_ms: float = 0.0
         self.total_count: float = 0.0
+        self.calibrated_ground_count: float = 0.0
+        self._latest_density_map: Optional[np.ndarray] = None
         self._fps_history: List[float] = []
         self._last_processed_time = time.time()
 
@@ -70,6 +78,15 @@ class PipelineService:
         self.yellow_zone_ratio: float = 0.0
         self.blue_free_ratio: float = 1.0
         self.avg_density_m2: float = 0.0
+
+        # Camera drift tracking
+        self.drift_detected: bool = False
+        self.drift_ratio: float = 1.0
+        self._drift_check_counter: int = 0
+
+        # Dynamic camera viewing angle & perspective auto-configuration
+        self.current_angle_result = None
+        self._angle_check_counter: int = 0
 
         # Latest rendered frames for MJPEG streams
         self._latest_rendered_jpeg: Optional[bytes] = None
@@ -151,6 +168,10 @@ class PipelineService:
         if self.scheduler:
             self.scheduler._last_density_map = None
             self.scheduler._last_count = 0.0
+        self.current_angle_result = None
+        self._angle_check_counter = 0
+        if self.calibration_mgr:
+            self.calibration_mgr._angle_estimator.reset()
         self.source = new_source
         self.stream = VideoStream(
             source=self.source,
@@ -186,6 +207,10 @@ class PipelineService:
         for zone in self.zones_data:
             zid = zone["id"]
             polygon = zone.get("polygon", [])
+            # Align default Zone 1 with active calibrated ground plane if available
+            if zid == "zone_1" and self.calibration_mgr.is_calibrated and len(self.calibration_mgr.image_points) >= 3:
+                polygon = self.calibration_mgr.image_points
+
             if len(polygon) < 3:
                 continue
 
@@ -218,17 +243,24 @@ class PipelineService:
         is_conn = self.stream.is_connected if self.stream else False
         status = "ONLINE" if is_conn else "RECONNECTING"
 
-        # Calibrated floor area for avg density
-        if self.calibration_mgr.is_calibrated:
-            floor_area = max(self.calibration_mgr.floor_area_m2, 1.0)
-        else:
-            floor_area = 1.0  # Cannot compute real ppl/m² without calibration
-
+        # Calibrated floor area and people inside ground polygon
         calibrated = self.calibration_mgr.is_calibrated
-        if calibrated:
-            self.avg_density_m2 = round(self.total_count / floor_area, 2)
+        floor_area = max(self.calibration_mgr.floor_area_m2, 1.0) if calibrated else 0.0
+
+        if calibrated and self.calibration_mgr.image_points and len(self.calibration_mgr.image_points) >= 3:
+            quad = self.calibration_mgr.image_points
+            if self._latest_density_map is not None:
+                people_in_ground, density = self.calibration_mgr.calibrator.density_per_m2(
+                    self._latest_density_map, self.total_count, quad
+                )
+                self.calibrated_ground_count = float(round(people_in_ground, 1))
+                self.avg_density_m2 = float(round(density, 2))
+            else:
+                self.calibrated_ground_count = float(round(self.total_count, 1))
+                self.avg_density_m2 = float(round(self.total_count / max(floor_area, 1.0), 2))
         else:
-            self.avg_density_m2 = 0.0  # Don't show fake density
+            self.calibrated_ground_count = float(round(self.total_count, 1))
+            self.avg_density_m2 = 0.0
 
         red_pct = round(self.red_hotspot_ratio * 100.0, 1)
         yellow_pct = round(self.yellow_zone_ratio * 100.0, 1)
@@ -307,12 +339,15 @@ class PipelineService:
             "status": status,
             "is_connected": is_conn,
             "calibrated": calibrated,
+            "drift_detected": self.drift_detected,
+            "drift_ratio": round(self.drift_ratio, 3),
             "processed_fps": round(self.processed_fps, 1),
             "camera_fps": self.stream.fps if self.stream else 0.0,
             "latency_ms": round(self.latency_ms, 1),
             "total_count": round(self.total_count, 1),
+            "calibrated_ground_count": round(self.calibrated_ground_count, 1),
             "density_m2": self.avg_density_m2,
-            "floor_area_m2": round(floor_area, 1) if calibrated else 0.0,
+            "floor_area_m2": round(self.calibration_mgr.floor_area_m2, 1) if calibrated else 0.0,
             "red_hotspot_pct": red_pct,
             "yellow_zone_pct": yellow_pct,
             "blue_free_pct": blue_pct,
@@ -328,6 +363,13 @@ class PipelineService:
             "risk_action": risk_text,
             "risk_advisory": risk_advisory,
             "source_name": source_display,
+            "camera_angle": {
+                "view_type": self.current_angle_result.view_type if self.current_angle_result else "HIGH_OBLIQUE",
+                "pitch_deg": self.current_angle_result.pitch_deg if self.current_angle_result else 55.0,
+                "scale_gradient": self.current_angle_result.scale_gradient if self.current_angle_result else 1.8,
+                "label": self.current_angle_result.label if self.current_angle_result else "Elevated Oblique (55°)",
+                "auto_configured": not self.calibration_mgr._is_manual,
+            },
         }
 
     def _process_loop(self) -> None:
@@ -363,10 +405,27 @@ class PipelineService:
                     time.sleep(0.1)
                     continue
 
-                # Process frame with adaptive scheduler
-                density_map, count, is_new, latency = self.scheduler.process_frame(frame, frame_id)
+                # Auto-detect camera viewing angle & ground geometry (every 30 frames or on startup)
+                self._angle_check_counter += 1
+                if self._angle_check_counter >= 30 or self.current_angle_result is None:
+                    self._angle_check_counter = 0
+                    self.current_angle_result = self.calibration_mgr.auto_calibrate_from_angle(frame)
+
+                # Process frame with adaptive scheduler and detected camera angle
+                density_map, count, is_new, latency = self.scheduler.process_frame(
+                    frame, frame_id, angle_result=self.current_angle_result
+                )
                 self.total_count = count
                 self.latency_ms = latency
+                self._latest_density_map = density_map
+
+                # Check camera drift periodically (every 30 frames)
+                self._drift_check_counter += 1
+                if self._drift_check_counter >= 30 and self.calibration_mgr.is_calibrated:
+                    self._drift_check_counter = 0
+                    drift, ratio = self.calibration_mgr.check_drift(frame)
+                    self.drift_detected = drift
+                    self.drift_ratio = ratio
 
                 # Render 1: Clean Raw Frame with subtle camera HUD
                 raw_rendered = self._render_raw_view(frame)
@@ -472,24 +531,63 @@ class PipelineService:
             # Translucent blending so video footage remains crisp under the heatmap
             out = cv2.addWeighted(out, 0.58, heatmap, 0.42, 0)
 
+        # Draw Calibrated Ground Plane Polygon and Grid if active
+        if self.calibration_mgr.is_calibrated and self.calibration_mgr.image_points and len(self.calibration_mgr.image_points) >= 4:
+            quad = self.calibration_mgr.image_points
+            pts = np.array(quad, dtype=np.int32)
+            # Amber perspective ground boundary
+            cv2.polylines(out, [pts], isClosed=True, color=(56, 189, 248), thickness=2, lineType=cv2.LINE_AA)
+            for idx, pt in enumerate(pts):
+                cv2.circle(out, (int(pt[0]), int(pt[1])), 4, (56, 189, 248), -1)
+            # Label on top anchor point
+            anchor_x = max(10, int(pts[0][0]))
+            anchor_y = max(50, int(pts[0][1]) - 6)
+            cv2.putText(
+                out,
+                f"CALIBRATED FLOOR: {self.calibration_mgr.floor_area_m2:.1f}m2 [{self.calibrated_ground_count:.0f} ppl | {self.avg_density_m2:.2f} ppl/m2]",
+                (anchor_x, anchor_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (56, 189, 248),
+                1,
+                cv2.LINE_AA,
+            )
+
         # Draw Control-Room HUD Header
         cv2.rectangle(out, (0, 0), (w, 36), (15, 23, 42), -1)
 
+        if self.current_angle_result:
+            angle_tag = f" | {self.current_angle_result.view_type} {round(self.current_angle_result.pitch_deg)}°"
+        else:
+            angle_tag = ""
         calib_tag = "CALIBRATED" if self.calibration_mgr.is_calibrated else "UNCALIBRATED"
         hud_text = (
-            f"AI HEATMAP [{calib_tag}] | Est: {count:.0f} ppl | {self.processed_fps:.1f} FPS | "
-            f"Lat: {latency:.0f}ms"
+            f"AI HEATMAP [{calib_tag}{angle_tag}] | {self.calibrated_ground_count:.0f} ppl in zone ({self.avg_density_m2:.2f} ppl/m2) | "
+            f"Total: {count:.0f} | {self.processed_fps:.1f} FPS"
         )
         cv2.putText(
             out,
             hud_text,
             (12, 24),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.52,
             (240, 240, 245),
             1,
             cv2.LINE_AA,
         )
+
+        if self.drift_detected:
+            cv2.rectangle(out, (0, h - 28), (w, h), (0, 0, 180), -1)
+            cv2.putText(
+                out,
+                f"DRIFT WARNING: CAMERA MOVEMENT DETECTED (MATCH {self.drift_ratio * 100:.0f}%) - RE-CALIBRATE",
+                (12, h - 9),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
         return out
 

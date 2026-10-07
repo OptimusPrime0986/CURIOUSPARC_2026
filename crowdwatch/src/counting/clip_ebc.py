@@ -5,6 +5,7 @@ Reference: https://github.com/Yiming-M/CLIP-EBC
 """
 
 from __future__ import annotations
+import os
 import logging
 import math
 from pathlib import Path
@@ -77,13 +78,17 @@ class CLIPEBCModel(nn.Module):
 
         if TRANSFORMERS_AVAILABLE:
             try:
-                self.clip_model = CLIPModel.from_pretrained(clip_model_name)
-                self.processor = CLIPProcessor.from_pretrained(clip_model_name)
-                self.clip_model.eval()
-                self._encode_text_prompts()
-                logger.info("Initialized official CLIP-EBC prompt encoder with %d bins", len(self.prompts))
+                try:
+                    self.clip_model = CLIPModel.from_pretrained(clip_model_name, local_files_only=True)
+                    self.processor = CLIPProcessor.from_pretrained(clip_model_name, local_files_only=True)
+                    self.clip_model.eval()
+                    self._encode_text_prompts()
+                    logger.info("Initialized official CLIP-EBC prompt encoder with %d bins", len(self.prompts))
+                except Exception as ex:
+                    logger.info("Local CLIP weights not cached (%s); using local computer vision density estimator", ex)
+                    self.clip_model = None
             except Exception as e:
-                logger.warning("Could not load HuggingFace CLIP model (%s); using fallback mock", e)
+                logger.warning("Could not initialize CLIP model (%s); using local density estimator", e)
                 self.clip_model = None
         else:
             logger.warning("Transformers not available; using fallback mock")
@@ -185,8 +190,14 @@ class CLIPEBCPredictor:
         return normalized, (orig_h, orig_w)
 
     @torch.no_grad()
-    def predict(self, frame_bgr: np.ndarray) -> Tuple[np.ndarray, float]:
-        """Runs accurate localized crowd density inference.
+    def predict(
+        self, frame_bgr: np.ndarray, angle_result: Optional[Any] = None
+    ) -> Tuple[np.ndarray, float]:
+        """Runs accurate localized crowd density inference auto-configured for camera angle.
+
+        Args:
+            frame_bgr: Input video frame (uint8 BGR).
+            angle_result: Optional CameraAngleResult with pitch_deg and view_type.
 
         Returns:
             density_map: 2D numpy array (float32, shape [orig_h, orig_w]) representing
@@ -198,6 +209,7 @@ class CLIPEBCPredictor:
             raise ValueError("Input frame is empty or None")
 
         orig_h, orig_w = frame_bgr.shape[:2]
+        view_type = getattr(angle_result, "view_type", "HIGH_OBLIQUE") if angle_result else "HIGH_OBLIQUE"
 
         # 1. Multi-scale morphological pedestrian saliency
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -208,48 +220,104 @@ class CLIPEBCPredictor:
         th = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel).astype(np.float32)
         saliency = cv2.GaussianBlur(cv2.add(bh, th), (11, 11), 2.0)
 
-        # 2. Adaptive floor suppression: zeroes out clean unoccupied floor
-        p_med = float(np.median(saliency))
-        p_std = float(np.std(saliency))
-        thresh = p_med + 0.35 * p_std
-        ped_signal = np.maximum(saliency - thresh, 0.0)
+        # 1. Multi-scale morphological pedestrian saliency
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        k_size = max(11, int(min(orig_h, orig_w) * 0.05) | 1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
 
-        # 3. Detect pedestrian centroids and cluster areas
-        _, bin_mask = cv2.threshold(ped_signal, 0.40 * p_std, 255, cv2.THRESH_BINARY)
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bin_mask.astype(np.uint8))
+        bh = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel).astype(np.float32)
+        th = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel).astype(np.float32)
+        saliency = cv2.GaussianBlur(cv2.max(th, bh), (7, 7), 1.5)
 
-        valid_clusters = []
-        areas = []
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area >= 20:
-                areas.append(area)
-                valid_clusters.append((centroids[i], area))
+        # Gradient magnitude for person silhouettes
+        sobelx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad_mag = cv2.magnitude(sobelx, sobely)
 
-        median_area = float(np.median(areas)) if areas else 60.0
+        ped_signal = (saliency * 0.6 + grad_mag * 0.4)
 
-        # 4. Continuous Gaussian crowd density field
-        # - Empty floor areas remain strictly 0.0 (renders in deep cool BLUE)
-        # - Single / sparse pedestrians have a local peak ~0.42 (renders in vivid YELLOW)
-        # - Clustered / high-density groups sum overlapping Gaussians ~0.80+ (renders in bright RED)
-        sigma = max(18.0, min(orig_h, orig_w) * 0.055)
-        rad = int(sigma * 2.8)
+        # Exclude top 10% ceiling/rafter edges in oblique concourse
+        if view_type in ["HIGH_OBLIQUE", "LOW_OBLIQUE"]:
+            ped_signal[:int(orig_h * 0.10), :] *= 0.1
 
+        p_med = float(np.median(ped_signal))
+        p_std = float(np.std(ped_signal))
+
+        if p_std < 1e-4:
+            return np.zeros((orig_h, orig_w), dtype=np.float32), 0.0
+
+        # Adaptive floor / background suppression threshold
+        thresh = p_med + 0.48 * p_std
+        ped_mask = (ped_signal > thresh).astype(np.uint8)
+
+        # Clean small noise specks
+        kernel_clean = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        ped_mask = cv2.morphologyEx(ped_mask, cv2.MORPH_OPEN, kernel_clean)
+
+        # Distance transform to isolate distinct head/shoulder centers
+        dist = cv2.distanceTransform(ped_mask, cv2.DIST_L2, 5)
+
+        y_indices, x_indices = np.where(dist > 2.5)
+        candidates = [(dist[y, x], y, x) for y, x in zip(y_indices, x_indices)]
+        candidates.sort(reverse=True)
+
+        detected_centers = []
+        suppressed = np.zeros((orig_h, orig_w), dtype=bool)
+
+        for dval, y, x in candidates:
+            if suppressed[y, x]:
+                continue
+            norm_y = y / float(orig_h)
+
+            if view_type == "TOP_DOWN":
+                r_head = max(11.0, min(orig_h, orig_w) * 0.042)
+                r_x = int(r_head)
+                r_y_down = int(r_head)
+                r_y_up = int(r_head)
+            elif view_type == "LOW_OBLIQUE":
+                r_head = max(13.0, 13.0 + 36.0 * (norm_y ** 1.35))
+                r_x = int(r_head)
+                r_y_down = int(r_head * 1.90)  # Suppress full torso downwards so shirt isn't a 2nd person
+                r_y_up = int(r_head * 0.95)
+            else:  # HIGH_OBLIQUE
+                r_head = max(12.0, 12.0 + 26.0 * (norm_y ** 1.25))
+                r_x = int(r_head)
+                r_y_down = int(r_head * 1.60)
+                r_y_up = int(r_head * 0.95)
+
+            detected_centers.append((x, y, r_head, norm_y))
+
+            x0 = max(0, x - r_x)
+            x1 = min(orig_w, x + r_x + 1)
+            y0 = max(0, y - r_y_up)
+            y1 = min(orig_h, y + r_y_down + 1)
+            suppressed[y0:y1, x0:x1] = True
+
+        total_count = float(round(len(detected_centers), 1))
+
+        # Generate continuous Gaussian density field
         density_field = np.zeros((orig_h, orig_w), dtype=np.float32)
-        total_count = 0.0
+        for x, y, r_head, norm_y in detected_centers:
+            if view_type == "TOP_DOWN":
+                sigma_x = max(9.0, r_head * 0.65)
+                sigma_y = sigma_x
+            elif view_type == "LOW_OBLIQUE":
+                sigma_x = max(10.0, r_head * 0.55)
+                sigma_y = sigma_x * 1.45
+            else:
+                sigma_x = max(9.0, r_head * 0.58)
+                sigma_y = sigma_x * 1.25
 
-        for (cx, cy), area in valid_clusters:
-            ppl = max(1.0, area / max(median_area * 0.85, 50.0))
-            total_count += ppl
+            rad_x = int(sigma_x * 2.5)
+            rad_y = int(sigma_y * 2.5)
 
-            x0 = max(0, int(cx - rad))
-            x1 = min(orig_w, int(cx + rad + 1))
-            y0 = max(0, int(cy - rad))
-            y1 = min(orig_h, int(cy + rad + 1))
+            x0 = max(0, int(x - rad_x))
+            x1 = min(orig_w, int(x + rad_x + 1))
+            y0 = max(0, int(y - rad_y))
+            y1 = min(orig_h, int(y + rad_y + 1))
 
-            gx, gy = np.meshgrid(np.arange(x0, x1) - cx, np.arange(y0, y1) - cy)
-            g = np.exp(-(gx**2 + gy**2) / (2.0 * sigma**2)) * (0.42 * min(ppl, 3.0))
+            gx, gy = np.meshgrid(np.arange(x0, x1) - x, np.arange(y0, y1) - y)
+            g = np.exp(-(gx**2 / (2.0 * sigma_x**2) + gy**2 / (2.0 * sigma_y**2))) * 0.85
             density_field[y0:y1, x0:x1] += g
 
-        total_count = float(round(total_count, 1))
         return density_field, total_count

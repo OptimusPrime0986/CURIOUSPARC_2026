@@ -57,7 +57,7 @@ class AdaptiveCountScheduler:
         return round(self._last_inference_latency_ms, 2)
 
     def process_frame(
-        self, frame: np.ndarray, frame_id: int
+        self, frame: np.ndarray, frame_id: int, angle_result: Optional[Any] = None
     ) -> Tuple[np.ndarray, float, bool, float]:
         """Processes a frame, executing CLIP-EBC when (frame_id % frame_skip == 0).
 
@@ -71,7 +71,7 @@ class AdaptiveCountScheduler:
 
         if should_run:
             t0 = time.perf_counter()
-            density_map, total_count = self.predictor.predict(frame)
+            density_map, total_count = self.predictor.predict(frame, angle_result=angle_result)
             latency = (time.perf_counter() - t0) * 1000.0
 
             self._last_density_map = density_map

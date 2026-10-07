@@ -5,6 +5,7 @@ and as an input into the confidence indicator (FR-04, FR-15).
 """
 
 from __future__ import annotations
+import os
 import logging
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -39,8 +40,21 @@ class DepthAnythingV2Predictor:
         logger.info("Initializing Depth Anything V2 Small on %s (License: Apache-2.0)", self.device)
         if TRANSFORMERS_AVAILABLE:
             try:
-                self.processor = AutoImageProcessor.from_pretrained(model_id)
-                self.model = AutoModelForDepthEstimation.from_pretrained(model_id)
+                try:
+                    self.processor = AutoImageProcessor.from_pretrained(model_id, local_files_only=True)
+                    self.model = AutoModelForDepthEstimation.from_pretrained(model_id, local_files_only=True)
+                except Exception:
+                    if os.environ.get("HF_HUB_OFFLINE") == "1" or os.environ.get("TRANSFORMERS_OFFLINE") == "1":
+                        raise
+                    import socket
+                    orig_timeout = socket.getdefaulttimeout()
+                    try:
+                        socket.setdefaulttimeout(4.0)
+                        self.processor = AutoImageProcessor.from_pretrained(model_id)
+                        self.model = AutoModelForDepthEstimation.from_pretrained(model_id)
+                    finally:
+                        socket.setdefaulttimeout(orig_timeout)
+
                 self.model.to(self.device)
                 self.model.eval()
                 logger.info("Depth Anything V2 Small loaded successfully from %s", model_id)

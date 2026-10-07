@@ -152,16 +152,32 @@ class TestHomographyCalibrator:
         fraction = identity_calibrator.people_in_zone(density, zone)
         assert fraction > 0.95
 
-    def test_density_per_m2(self, identity_calibrator: HomographyCalibrator):
+    def test_density_per_m2(self):
         """Known count in a known area should give correct ppl/m²."""
-        # 2×2 zone → area = 4 m²
+        cal = HomographyCalibrator()
+        # 400×200 pixel image mapping to 4.0m × 2.0m ground rectangle (100 px = 1 m)
+        cal.calibrate([[0, 0], [400, 0], [400, 200], [0, 200]], real_width_m=4.0, real_height_m=2.0)
+        # 200×200 zone (half the image) -> world area = 2.0m × 2.0m = 4.0 m²
         density = np.ones((200, 400), dtype=np.float32)
         total_count = 40.0
         zone = [[0, 0], [200, 0], [200, 200], [0, 200]]
-        people, ppl_m2 = identity_calibrator.density_per_m2(density, total_count, zone)
-        # ~50% of density → ~20 people in ~4.0 m² zone → ~5 ppl/m²
-        assert people > 0
-        assert ppl_m2 > 0
+        people, ppl_m2 = cal.density_per_m2(density, total_count, zone)
+        # ~50% of density → ~20 people in ~4.0 m² zone → ~5.0 ppl/m²
+        assert abs(people - 20.0) <= 0.3
+        assert abs(ppl_m2 - 5.0) <= 0.2
+
+    def test_density_per_m2_with_depth_sanity(self):
+        """Density computation with depth sanity check returning metadata."""
+        cal = HomographyCalibrator()
+        cal.calibrate([[0, 0], [400, 0], [400, 200], [0, 200]], real_width_m=4.0, real_height_m=2.0)
+        density = np.ones((200, 400), dtype=np.float32)
+        depth = np.full((200, 400), 2.5, dtype=np.float32)
+        zone = [[0, 0], [200, 0], [200, 200], [0, 200]]
+        people, ppl_m2, meta = cal.density_per_m2(density, 40.0, zone, depth_map=depth, return_meta=True)
+        assert meta["depth_sanity_passed"] is True
+        assert abs(meta["depth_mean"] - 2.5) < 0.01
+        assert meta["depth_confidence"] > 0.8
+        assert abs(ppl_m2 - 5.0) <= 0.2
 
     def test_preview_grid_generates_lines(self, simple_calibrator: HomographyCalibrator):
         lines = simple_calibrator.generate_preview_grid(

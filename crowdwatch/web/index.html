@@ -10,6 +10,13 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <!-- Global Camera Drift / Warning Banner (Hidden by default) -->
+  <div id="drift-alert-banner" class="drift-banner hidden" style="background: #991b1b; color: #fef2f2; padding: 10px 20px; font-weight: 600; text-align: center; display: flex; align-items: center; justify-content: center; gap: 12px; border-bottom: 2px solid #ef4444; z-index: 1000;">
+    <span style="font-size: 1.2rem;">⚠️</span>
+    <span>CAMERA DRIFT WARNING: Camera movement detected! Ground plane calibration may be invalid. Please freeze a new frame and re-calibrate.</span>
+    <button id="btn-drift-recalib" class="btn btn-sm btn-outline" style="color: #fff; border-color: #fff; margin-left: 10px;">Re-Calibrate Now</button>
+  </div>
+
   <!-- Top Control Room Header -->
   <header class="app-header">
     <div class="brand">
@@ -46,6 +53,10 @@
       <div class="status-item">
         <span class="label">EST. PEOPLE:</span>
         <strong class="count-badge" id="telemetry-count">--</strong>
+      </div>
+      <div class="status-item">
+        <span class="label">ANGLE:</span>
+        <span class="badge" id="header-angle-badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); font-size: 0.76rem; padding: 2px 7px; border-radius: 4px; font-weight: 700;">AUTO</span>
       </div>
       <div class="status-item">
         <span class="label">RISK:</span>
@@ -277,7 +288,7 @@
                 <strong class="metric-number color-normal" id="metric-risk-label">LOW</strong>
                 <span class="metric-unit">Risk Index</span>
               </div>
-              <span class="metric-sub">Time-to-Critical: > 10 min</span>
+              <span class="metric-sub" id="metric-ttc-label">Time-to-Critical: Not Available</span>
             </div>
           </div>
 
@@ -294,14 +305,14 @@
                 <div class="zone-info">
                   <div class="zone-title-row">
                     <strong>Zone A – Main Concourse</strong>
-                    <span class="badge badge-normal" id="badge-zone-a">1.4 ppl/m²</span>
+                    <span class="badge badge-normal" id="badge-zone-a">-- ppl/m²</span>
                   </div>
                   <div class="zone-progress-track">
-                    <div class="zone-progress-fill" id="fill-zone-a" style="width: 28%;"></div>
+                    <div class="zone-progress-fill" id="fill-zone-a" style="width: 0%;"></div>
                   </div>
                   <div class="zone-sub-metrics">
-                    <span>Flow: <strong>0.8 m/s</strong></span>
-                    <span>TTC: <strong>Stable</strong></span>
+                    <span>Flow: <strong id="val-flow-a">Not Available</strong></span>
+                    <span>TTC: <strong id="val-ttc-a">Not Available</strong></span>
                   </div>
                 </div>
               </div>
@@ -311,14 +322,14 @@
                 <div class="zone-info">
                   <div class="zone-title-row">
                     <strong>Zone B – Choke Corridor</strong>
-                    <span class="badge badge-normal" id="badge-zone-b">0.5 ppl/m²</span>
+                    <span class="badge badge-normal" id="badge-zone-b">-- ppl/m²</span>
                   </div>
                   <div class="zone-progress-track">
-                    <div class="zone-progress-fill" id="fill-zone-b" style="width: 15%;"></div>
+                    <div class="zone-progress-fill" id="fill-zone-b" style="width: 0%;"></div>
                   </div>
                   <div class="zone-sub-metrics">
-                    <span>Flow: <strong>0.9 m/s</strong></span>
-                    <span>TTC: <strong>Stable</strong></span>
+                    <span>Flow: <strong id="val-flow-b">Not Available</strong></span>
+                    <span>TTC: <strong id="val-ttc-b">Not Available</strong></span>
                   </div>
                 </div>
               </div>
@@ -329,20 +340,21 @@
           <div class="panel-card">
             <div class="panel-header">
               <h3>Gate Inflow / Outflow Capacity</h3>
+              <span class="badge badge-subtle">Not Available (Phase 2)</span>
             </div>
             <div class="chokepoint-box">
               <div class="cp-row">
                 <span>Gate 1 Primary Inflow:</span>
-                <strong>1.4 ppl/sec</strong>
+                <strong>Not Available</strong>
               </div>
               <div class="cp-row">
                 <span>Discharge Capacity:</span>
-                <strong>2.5 ppl/sec</strong>
+                <strong>Not Available</strong>
               </div>
               <div class="cp-meter-track">
-                <div class="cp-meter-fill" style="width: 56%;"></div>
+                <div class="cp-meter-fill" style="width: 0%;"></div>
               </div>
-              <div class="cp-footnote">Capacity Utilization: 56% (Safe)</div>
+              <div class="cp-footnote">Capacity Utilization: Not Available (Phase 2)</div>
             </div>
           </div>
 
@@ -373,32 +385,54 @@
           <div class="panel-header">
             <h2>Interactive 4-Point Ground Calibration</h2>
             <div class="setup-toolbar">
+              <button class="btn btn-sm btn-primary" id="btn-freeze-frame">📷 Freeze Frame</button>
+              <button class="btn btn-sm" id="btn-auto-angle" style="border-color: #38bdf8; color: #38bdf8;">🤖 Auto Angle</button>
               <button class="btn btn-sm active" id="btn-mode-calib">1. Floor Homography</button>
               <button class="btn btn-sm" id="btn-mode-zone">2. Draw Zones</button>
               <button class="btn btn-sm" id="btn-mode-choke">3. Mark Choke Points</button>
-              <button class="btn btn-sm btn-danger" id="btn-reset-drawing">Reset Points</button>
+              <button class="btn btn-sm btn-outline" id="btn-toggle-grid">📐 Toggle 1m Grid</button>
+              <button class="btn btn-sm btn-danger" id="btn-reset-drawing">Reset</button>
             </div>
           </div>
-          <div class="setup-canvas-wrapper">
-            <canvas id="setup-canvas" width="640" height="360"></canvas>
+          <div class="setup-canvas-wrapper" style="position: relative;">
+            <canvas id="setup-canvas" width="640" height="360" style="cursor: crosshair; display: block; border-radius: 6px;"></canvas>
+            <div id="setup-canvas-loading" class="hidden" style="position: absolute; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; font-weight: 600; color: #38bdf8;">
+              Freezing video frame...
+            </div>
           </div>
-          <p class="setup-hint" id="setup-instruction">
-            Click 4 points on the floor in clockwise order to map the camera perspective to real-world meters.
-          </p>
+          <div class="setup-canvas-footer" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+            <p class="setup-hint" id="setup-instruction" style="margin: 0; font-size: 0.88rem; color: #94a3b8;">
+              Click 4 points on the floor in clockwise order: Top-Left, Top-Right, Bottom-Right, Bottom-Left.
+            </p>
+            <div class="calib-status-card" id="calib-status-card" style="display: flex; align-items: center; justify-content: space-between; font-size: 0.84rem; padding: 8px 12px; background: rgba(15, 23, 42, 0.7); border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1);">
+              <span>Status: <strong id="calib-status-text" style="color: #f59e0b;">Checking...</strong></span>
+              <span>Angle: <strong id="calib-angle-text" style="color: #38bdf8;">Auto-Detecting...</strong></span>
+              <span>Floor Area: <strong id="calib-floor-area">-- m²</strong></span>
+              <span>Reprojection Error: <strong id="calib-reproj-error">-- px</strong></span>
+            </div>
+          </div>
         </div>
 
         <div class="setup-sidebar panel-card">
           <div class="panel-header">
-            <h2>Threshold & Safety Rules</h2>
+            <h2>Ground Scale & Safety Rules</h2>
           </div>
           <form id="setup-form" onsubmit="return false;">
             <div class="form-group">
-              <label>Ground Width (meters):</label>
-              <input type="number" id="calib-width-m" value="6.0" step="0.1" class="form-input">
+              <label>Ground Rectangle Real Width (meters):</label>
+              <input type="number" id="calib-width-m" value="6.0" step="0.1" min="0.5" class="form-input">
             </div>
             <div class="form-group">
-              <label>Ground Length (meters):</label>
-              <input type="number" id="calib-height-m" value="10.0" step="0.1" class="form-input">
+              <label>Ground Rectangle Real Length (meters):</label>
+              <input type="number" id="calib-height-m" value="10.0" step="0.1" min="0.5" class="form-input">
+            </div>
+            <div class="form-group" style="display: flex; gap: 8px; flex-direction: column;">
+              <button class="btn btn-outline" id="btn-calc-calib" style="width: 100%; margin-top: 4px;">
+                ⚡ Calculate Homography (4 Points)
+              </button>
+              <button class="btn btn-outline" id="btn-auto-angle-setup" style="width: 100%; border-color: #38bdf8; color: #38bdf8; font-weight: 600;">
+                🤖 Auto-Configure by Camera Angle
+              </button>
             </div>
             <hr class="divider">
             <div class="form-group">
@@ -413,8 +447,9 @@
               <label>Critical Stampede Threshold (ppl/m²):</label>
               <input type="number" id="thresh-critical" value="5.0" step="0.1" class="form-input">
             </div>
-            <div class="form-actions">
-              <button class="btn btn-primary" id="btn-save-setup">Save Calibration Profile</button>
+            <div class="form-actions" style="margin-top: 14px; display: flex; flex-direction: column; gap: 8px;">
+              <button class="btn btn-primary" id="btn-save-setup" style="width: 100%;">💾 Save Calibration to System</button>
+              <span id="calib-save-feedback" style="font-size: 0.8rem; text-align: center; color: #10b981; display: none;">Calibration saved successfully!</span>
             </div>
           </form>
         </div>

@@ -27,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const latBadge = document.getElementById("telemetry-latency");
   const countBadge = document.getElementById("telemetry-count");
   const headerRiskBadge = document.getElementById("header-risk-badge");
+  const headerAngleBadge = document.getElementById("header-angle-badge");
   const masterRiskCard = document.getElementById("master-risk-card");
   const masterRiskStatus = document.getElementById("master-risk-status");
   const masterRiskAction = document.getElementById("master-risk-action");
@@ -86,16 +87,36 @@ document.addEventListener("DOMContentLoaded", () => {
           latBadge.textContent = `${Math.round(data.latency_ms)} ms`;
         }
         if (data.total_count !== undefined) {
-          const rounded = Math.round(data.total_count);
-          countBadge.textContent = `${rounded}`;
-          metricHeadcount.textContent = `${rounded}`;
-          heatmapCountPill.textContent = `${rounded} ppl`;
+          const roundedTotal = Math.round(data.total_count);
+          const groundCount = data.calibrated_ground_count !== undefined ? Math.round(data.calibrated_ground_count) : roundedTotal;
+          countBadge.textContent = data.calibrated ? `${groundCount}` : `${roundedTotal}`;
+          metricHeadcount.textContent = data.calibrated ? `${groundCount}` : `${roundedTotal}`;
+          heatmapCountPill.textContent = data.calibrated ? `${groundCount} in zone` : `${roundedTotal} ppl`;
         }
 
         // Density display
         const metricSubDensity = document.getElementById("metric-sub-density");
         if (metricSubDensity && data.density_m2 !== undefined) {
-          metricSubDensity.textContent = `Approx. ${data.density_m2} ppl/m² avg (${data.red_hotspot_pct || 0}% hotspots)`;
+          if (data.calibrated) {
+            metricSubDensity.textContent = `${data.density_m2} ppl/m² in ${data.floor_area_m2 || 0}m² zone (${data.total_count || 0} total in frame)`;
+          } else {
+            metricSubDensity.textContent = `Uncalibrated (${data.red_hotspot_pct || 0}% hotspots)`;
+          }
+        }
+
+        // Camera viewing angle telemetry update
+        if (data.camera_angle && headerAngleBadge) {
+          headerAngleBadge.textContent = data.camera_angle.label || `${data.camera_angle.view_type} (${data.camera_angle.pitch_deg}°)`;
+          if (data.camera_angle.view_type === "TOP_DOWN") {
+            headerAngleBadge.style.color = "#38bdf8";
+            headerAngleBadge.style.borderColor = "rgba(56, 189, 248, 0.4)";
+          } else if (data.camera_angle.view_type === "HIGH_OBLIQUE") {
+            headerAngleBadge.style.color = "#a78bfa";
+            headerAngleBadge.style.borderColor = "rgba(167, 139, 250, 0.4)";
+          } else {
+            headerAngleBadge.style.color = "#fbbf24";
+            headerAngleBadge.style.borderColor = "rgba(251, 191, 36, 0.4)";
+          }
         }
 
         // Risk Level styling & Master Stampede Early-Warning Banner
@@ -157,6 +178,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (data.source_name && currentSourceDisplay) {
           currentSourceDisplay.textContent = data.source_name;
+        }
+
+        // Camera drift alert handling
+        const driftBanner = document.getElementById("drift-alert-banner");
+        if (driftBanner) {
+          if (data.drift_detected) {
+            driftBanner.classList.remove("hidden");
+            const driftRatioPct = Math.round((data.drift_ratio || 0) * 100);
+            const msgSpan = driftBanner.querySelector("span:nth-child(2)");
+            if (msgSpan) {
+              msgSpan.textContent = `CAMERA DRIFT WARNING: Camera movement detected (match ${driftRatioPct}%)! Ground plane calibration may be invalid. Please freeze a new frame and re-calibrate.`;
+            }
+          } else {
+            driftBanner.classList.add("hidden");
+          }
         }
 
         if (data.is_connected === false) {
@@ -495,7 +531,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // --------------------------------------------------------------------------
-  // 6. SETUP CALIBRATION CANVAS DRAWING
+  // 6. SETUP INTERACTIVE GROUND CALIBRATION WIZARD (Phase 1)
   // --------------------------------------------------------------------------
   const setupCanvas = document.getElementById("setup-canvas");
   if (setupCanvas) {
@@ -504,51 +540,288 @@ document.addEventListener("DOMContentLoaded", () => {
     let calibPoints = [];
     let zonePoints = [];
     let chokePoints = [];
+    let bgImage = null;
+    let previewGridLines = [];
+    let showGrid = true;
 
     const setupInstruction = document.getElementById("setup-instruction");
+    const setupCanvasLoading = document.getElementById("setup-canvas-loading");
+    const calibStatusText = document.getElementById("calib-status-text");
+    const calibAngleText = document.getElementById("calib-angle-text");
+    const calibFloorArea = document.getElementById("calib-floor-area");
+    const calibReprojError = document.getElementById("calib-reproj-error");
+    const calibWidthInput = document.getElementById("calib-width-m");
+    const calibHeightInput = document.getElementById("calib-height-m");
+    const calibSaveFeedback = document.getElementById("calib-save-feedback");
+
+    const btnFreezeFrame = document.getElementById("btn-freeze-frame");
+    const btnAutoAngle = document.getElementById("btn-auto-angle");
+    const btnAutoAngleSetup = document.getElementById("btn-auto-angle-setup");
     const btnModeCalib = document.getElementById("btn-mode-calib");
     const btnModeZone = document.getElementById("btn-mode-zone");
     const btnModeChoke = document.getElementById("btn-mode-choke");
+    const btnToggleGrid = document.getElementById("btn-toggle-grid");
     const btnResetDrawing = document.getElementById("btn-reset-drawing");
+    const btnCalcCalib = document.getElementById("btn-calc-calib");
     const btnSaveSetup = document.getElementById("btn-save-setup");
+    const btnDriftRecalib = document.getElementById("btn-drift-recalib");
+
+    // Fetch and freeze currently active video frame
+    async function freezeVideoFrame() {
+      if (setupCanvasLoading) setupCanvasLoading.classList.remove("hidden");
+      try {
+        const timestamp = Date.now();
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          bgImage = img;
+          if (setupCanvasLoading) setupCanvasLoading.classList.add("hidden");
+          drawSetupCanvas();
+          appendAuditLog("Calibration frame captured from video stream.", "info");
+        };
+        img.onerror = () => {
+          if (setupCanvasLoading) setupCanvasLoading.classList.add("hidden");
+          appendAuditLog("Could not capture video frame for calibration.", "error");
+        };
+        img.src = `/api/calibration/frame?t=${timestamp}`;
+      } catch (err) {
+        if (setupCanvasLoading) setupCanvasLoading.classList.add("hidden");
+        console.error("Frame freeze error:", err);
+      }
+    }
+
+    // Load active calibration status from backend
+    async function loadCalibrationStatus() {
+      try {
+        const resp = await fetch("/api/calibration/status");
+        const status = await resp.json();
+        if (status.calibrated) {
+          if (calibStatusText) {
+            calibStatusText.textContent = "CALIBRATED (Active)";
+            calibStatusText.style.color = "#10b981";
+          }
+          if (status.camera_angle && calibAngleText) {
+            calibAngleText.textContent = `${status.camera_angle.label} (${status.camera_angle.pitch_deg}°, ${status.camera_angle.scale_gradient}x)`;
+          }
+          if (calibFloorArea) calibFloorArea.textContent = `${status.floor_area_m2 || 0} m²`;
+          if (calibReprojError) calibReprojError.textContent = `${status.reprojection_error_px || 0} px`;
+          if (calibWidthInput && status.real_width_m) calibWidthInput.value = status.real_width_m;
+          if (calibHeightInput && status.real_height_m) calibHeightInput.value = status.real_height_m;
+
+          // Fetch preview grid
+          loadPreviewGrid();
+        } else {
+          if (calibStatusText) {
+            calibStatusText.textContent = "UNCALIBRATED";
+            calibStatusText.style.color = "#f59e0b";
+          }
+          if (calibFloorArea) calibFloorArea.textContent = "0.0 m²";
+          if (calibReprojError) calibReprojError.textContent = "--";
+        }
+      } catch (err) {
+        console.error("Failed to load calibration status:", err);
+      }
+    }
+
+    // Load projected 1m x 1m grid from backend
+    async function loadPreviewGrid() {
+      try {
+        const resp = await fetch("/api/calibration/grid");
+        const data = await resp.json();
+        if (data.lines) {
+          previewGridLines = data.lines;
+          drawSetupCanvas();
+        }
+      } catch (err) {
+        console.error("Failed to load preview grid:", err);
+      }
+    }
+
+    // Calculate Homography via API
+    async function calculateHomography() {
+      if (calibPoints.length !== 4) {
+        alert("Please mark exactly 4 ground-plane points on the frozen image first (in clockwise order).");
+        return;
+      }
+      const realWidth = parseFloat(calibWidthInput.value) || 6.0;
+      const realHeight = parseFloat(calibHeightInput.value) || 10.0;
+
+      if (realWidth <= 0 || realHeight <= 0) {
+        alert("Real-world ground width and length must be positive meters.");
+        return;
+      }
+
+      try {
+        appendAuditLog(`Calculating ground homography for ${realWidth}m × ${realHeight}m...`);
+        const resp = await fetch("/api/calibration/points", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            image_points: calibPoints,
+            real_width_m: realWidth,
+            real_height_m: realHeight,
+            name: "Operator Ground Calibration",
+          }),
+        });
+
+        const res = await resp.json();
+        if (resp.ok && res.status === "ok") {
+          appendAuditLog(`Homography computed: Area ${res.area_m2}m², Reproj Error ${res.reprojection_error_px}px`, "success");
+          if (calibStatusText) {
+            calibStatusText.textContent = "COMPUTED (Unsaved)";
+            calibStatusText.style.color = "#38bdf8";
+          }
+          if (calibFloorArea) calibFloorArea.textContent = `${res.area_m2} m²`;
+          if (calibReprojError) calibReprojError.textContent = `${res.reprojection_error_px} px`;
+
+          showGrid = true;
+          await loadPreviewGrid();
+          alert(`Ground calibration computed successfully!\nReal Area: ${res.area_m2} m²\nReprojection Error: ${res.reprojection_error_px} px\n\nVerify that the cyan 1m grid lines align with the floor perspective, then click 'Save Calibration to System'.`);
+        } else {
+          alert(`Calibration error: ${res.detail || "Invalid input coordinates"}`);
+        }
+      } catch (err) {
+        appendAuditLog(`Calibration request failed: ${err}`, "error");
+      }
+    }
+
+    // Save calibration to disk
+    async function saveCalibrationToDisk() {
+      try {
+        const resp = await fetch("/api/calibration/save", { method: "POST" });
+        const res = await resp.json();
+        if (resp.ok && res.status === "ok") {
+          if (calibStatusText) {
+            calibStatusText.textContent = "CALIBRATED & SAVED";
+            calibStatusText.style.color = "#10b981";
+          }
+          if (calibSaveFeedback) {
+            calibSaveFeedback.style.display = "block";
+            setTimeout(() => { calibSaveFeedback.style.display = "none"; }, 3500);
+          }
+          appendAuditLog("Ground calibration persisted to config/calibration.json.", "success");
+          // Clear any camera drift alert if re-calibrated
+          const driftBanner = document.getElementById("drift-alert-banner");
+          if (driftBanner) driftBanner.classList.add("hidden");
+        } else {
+          alert(`Save failed: ${res.detail || "No valid calibration available"}`);
+        }
+      } catch (err) {
+        appendAuditLog(`Failed to save calibration: ${err}`, "error");
+      }
+    }
+
+    // Mode Toolbar Buttons
+    if (btnFreezeFrame) btnFreezeFrame.addEventListener("click", freezeVideoFrame);
+    if (btnCalcCalib) btnCalcCalib.addEventListener("click", calculateHomography);
+    if (btnSaveSetup) btnSaveSetup.addEventListener("click", saveCalibrationToDisk);
+    if (btnAutoAngle) btnAutoAngle.addEventListener("click", autoDetectAngleCalibration);
+    if (btnAutoAngleSetup) btnAutoAngleSetup.addEventListener("click", autoDetectAngleCalibration);
+
+    // Auto-calibrate via camera angle estimation
+    async function autoDetectAngleCalibration() {
+      try {
+        appendAuditLog("Auto-detecting camera viewing angle and computing perspective calibration...");
+        const resp = await fetch("/api/calibration/auto_angle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ force: true }),
+        });
+        const res = await resp.json();
+        if (resp.ok && res.status === "ok") {
+          const angle = res.angle || res;
+          const calib = res.calibration || {};
+          const area = calib.floor_area_m2 || res.area_m2 || 0;
+          const reproj = calib.reprojection_error_px || res.reprojection_error_px || 0;
+          appendAuditLog(`Angle auto-configured: ${angle.view_type} (${angle.pitch_deg}° pitch, scale ${angle.scale_gradient}x, ${area}m²)`, "success");
+          if (calibStatusText) {
+            calibStatusText.textContent = "CALIBRATED (Auto-Angle)";
+            calibStatusText.style.color = "#10b981";
+          }
+          if (calibAngleText) {
+            calibAngleText.textContent = `${angle.view_type} (${angle.pitch_deg}°, ${angle.scale_gradient}x)`;
+          }
+          if (calibFloorArea) calibFloorArea.textContent = `${area} m²`;
+          if (calibReprojError) calibReprojError.textContent = `${reproj} px`;
+          if (calibWidthInput && calib.real_width_m) calibWidthInput.value = calib.real_width_m;
+          if (calibHeightInput && calib.real_height_m) calibHeightInput.value = calib.real_height_m;
+
+          showGrid = true;
+          await loadPreviewGrid();
+          await freezeVideoFrame();
+          alert(`Camera Angle Auto-Configured Successfully!\n\nView Type: ${angle.view_type}\nEstimated Pitch: ${angle.pitch_deg}°\nScale Gradient: ${angle.scale_gradient}x\nGround Area: ${area} m²\n\nPerspective trapezoid and density kernel have been optimized for this camera angle.`);
+        } else {
+          alert(`Auto-detection failed: ${res.detail || "Could not analyze frame"}`);
+        }
+      } catch (err) {
+        appendAuditLog(`Auto-angle calibration failed: ${err}`, "error");
+      }
+    }
+
+    if (btnToggleGrid) {
+      btnToggleGrid.addEventListener("click", () => {
+        showGrid = !showGrid;
+        btnToggleGrid.classList.toggle("active", showGrid);
+        drawSetupCanvas();
+      });
+    }
 
     if (btnModeCalib) {
       btnModeCalib.addEventListener("click", () => {
         setupMode = "calib";
-        setupInstruction.textContent = "Click 4 points on the floor in clockwise order to map perspective to real-world meters.";
+        [btnModeCalib, btnModeZone, btnModeChoke].forEach((b) => b && b.classList.remove("active"));
+        btnModeCalib.classList.add("active");
+        setupInstruction.textContent = "Click 4 points on the floor in clockwise order: Top-Left, Top-Right, Bottom-Right, Bottom-Left.";
       });
     }
 
     if (btnModeZone) {
       btnModeZone.addEventListener("click", () => {
         setupMode = "zone";
-        setupInstruction.textContent = "Click to define polygon vertices for monitored zone (e.g. Zone A).";
+        [btnModeCalib, btnModeZone, btnModeChoke].forEach((b) => b && b.classList.remove("active"));
+        btnModeZone.classList.add("active");
+        setupInstruction.textContent = "Click to define polygon vertices for monitored zone (e.g. Zone A). Double-click or reset to clear.";
       });
     }
 
     if (btnModeChoke) {
       btnModeChoke.addEventListener("click", () => {
         setupMode = "choke";
-        setupInstruction.textContent = "Click 2 points to define a choke-point crossing gate.";
+        [btnModeCalib, btnModeZone, btnModeChoke].forEach((b) => b && b.classList.remove("active"));
+        btnModeChoke.classList.add("active");
+        setupInstruction.textContent = "Click 2 points across a corridor or entrance to define a choke-point gate.";
       });
     }
 
     if (btnResetDrawing) {
       btnResetDrawing.addEventListener("click", () => {
-        calibPoints = [];
-        zonePoints = [];
-        chokePoints = [];
+        if (setupMode === "calib") {
+          calibPoints = [];
+          previewGridLines = [];
+        } else if (setupMode === "zone") {
+          zonePoints = [];
+        } else if (setupMode === "choke") {
+          chokePoints = [];
+        }
         drawSetupCanvas();
       });
     }
 
+    // Canvas click handling
     setupCanvas.addEventListener("click", (e) => {
       const rect = setupCanvas.getBoundingClientRect();
-      const x = Math.round(e.clientX - rect.left);
-      const y = Math.round(e.clientY - rect.top);
+      const scaleX = setupCanvas.width / rect.width;
+      const scaleY = setupCanvas.height / rect.height;
+      const x = Math.round((e.clientX - rect.left) * scaleX);
+      const y = Math.round((e.clientY - rect.top) * scaleY);
 
       if (setupMode === "calib") {
-        if (calibPoints.length < 4) calibPoints.push([x, y]);
+        if (calibPoints.length < 4) {
+          calibPoints.push([x, y]);
+          if (calibPoints.length === 4) {
+            setupInstruction.textContent = "4 points marked! Click '⚡ Calculate Homography' to project scale.";
+          }
+        }
       } else if (setupMode === "zone") {
         zonePoints.push([x, y]);
       } else if (setupMode === "choke") {
@@ -557,27 +830,49 @@ document.addEventListener("DOMContentLoaded", () => {
       drawSetupCanvas();
     });
 
+    // Draw canvas scene (video frame + 1m grid + points + polygons)
     function drawSetupCanvas() {
-      setupCtx.fillStyle = "#0c1017";
-      setupCtx.fillRect(0, 0, setupCanvas.width, setupCanvas.height);
+      setupCtx.clearRect(0, 0, setupCanvas.width, setupCanvas.height);
 
-      // Grid lines
-      setupCtx.strokeStyle = "rgba(255, 255, 255, 0.06)";
-      setupCtx.lineWidth = 1;
-      for (let x = 0; x < setupCanvas.width; x += 40) {
-        setupCtx.beginPath();
-        setupCtx.moveTo(x, 0);
-        setupCtx.lineTo(x, setupCanvas.height);
-        setupCtx.stroke();
-      }
-      for (let y = 0; y < setupCanvas.height; y += 40) {
-        setupCtx.beginPath();
-        setupCtx.moveTo(0, y);
-        setupCtx.lineTo(setupCanvas.width, y);
-        setupCtx.stroke();
+      if (bgImage) {
+        setupCtx.drawImage(bgImage, 0, 0, setupCanvas.width, setupCanvas.height);
+      } else {
+        // Dark placeholder background
+        setupCtx.fillStyle = "#0c1017";
+        setupCtx.fillRect(0, 0, setupCanvas.width, setupCanvas.height);
+
+        // Faint placeholder grid
+        setupCtx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+        setupCtx.lineWidth = 1;
+        for (let x = 0; x < setupCanvas.width; x += 40) {
+          setupCtx.beginPath();
+          setupCtx.moveTo(x, 0);
+          setupCtx.lineTo(x, setupCanvas.height);
+          setupCtx.stroke();
+        }
+        for (let y = 0; y < setupCanvas.height; y += 40) {
+          setupCtx.beginPath();
+          setupCtx.moveTo(0, y);
+          setupCtx.lineTo(setupCanvas.width, y);
+          setupCtx.stroke();
+        }
       }
 
-      // Draw Calib Points
+      // Draw 1m x 1m Ground Perspective Grid
+      if (showGrid && previewGridLines.length > 0) {
+        setupCtx.strokeStyle = "rgba(56, 189, 248, 0.75)";
+        setupCtx.lineWidth = 1.5;
+        previewGridLines.forEach((seg) => {
+          if (seg.start && seg.end) {
+            setupCtx.beginPath();
+            setupCtx.moveTo(seg.start[0], seg.start[1]);
+            setupCtx.lineTo(seg.end[0], seg.end[1]);
+            setupCtx.stroke();
+          }
+        });
+      }
+
+      // Draw Calib Points (Floor Homography Quad)
       if (calibPoints.length > 0) {
         setupCtx.strokeStyle = "#38bdf8";
         setupCtx.fillStyle = "#0284c7";
@@ -588,12 +883,13 @@ document.addEventListener("DOMContentLoaded", () => {
           setupCtx.fill();
           setupCtx.stroke();
           setupCtx.fillStyle = "#ffffff";
-          setupCtx.font = "11px monospace";
+          setupCtx.font = "bold 12px Inter, monospace";
           setupCtx.fillText(`P${i + 1}`, x + 10, y + 4);
         });
+
         if (calibPoints.length === 4) {
           setupCtx.strokeStyle = "#38bdf8";
-          setupCtx.fillStyle = "rgba(56, 189, 248, 0.15)";
+          setupCtx.fillStyle = "rgba(56, 189, 248, 0.18)";
           setupCtx.beginPath();
           setupCtx.moveTo(calibPoints[0][0], calibPoints[0][1]);
           for (let i = 1; i < 4; i++) setupCtx.lineTo(calibPoints[i][0], calibPoints[i][1]);
@@ -603,10 +899,10 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
 
-      // Draw Zones
+      // Draw Zone Polygons
       if (zonePoints.length > 0) {
         setupCtx.strokeStyle = "#10b981";
-        setupCtx.fillStyle = "rgba(16, 185, 129, 0.2)";
+        setupCtx.fillStyle = "rgba(16, 185, 129, 0.22)";
         setupCtx.lineWidth = 2;
         setupCtx.beginPath();
         setupCtx.moveTo(zonePoints[0][0], zonePoints[0][1]);
@@ -627,13 +923,23 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    drawSetupCanvas();
-
-    if (btnSaveSetup) {
-      btnSaveSetup.addEventListener("click", () => {
-        alert("Calibration profile saved to config files.");
-        appendAuditLog("Ground plane calibration updated.", "success");
+    // Auto-load status & frame when calibration tab is opened
+    const tabBtnSetup = document.getElementById("tab-btn-setup");
+    if (tabBtnSetup) {
+      tabBtnSetup.addEventListener("click", () => {
+        loadCalibrationStatus();
+        if (!bgImage) freezeVideoFrame();
       });
     }
+
+    if (btnDriftRecalib) {
+      btnDriftRecalib.addEventListener("click", () => {
+        if (tabBtnSetup) tabBtnSetup.click();
+        freezeVideoFrame();
+      });
+    }
+
+    // Initial check on load
+    loadCalibrationStatus();
   }
 });
